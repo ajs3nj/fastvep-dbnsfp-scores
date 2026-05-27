@@ -1,0 +1,17 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock
+
+# Python
+__pycache__/
+*.pyc
+
+# data — never commit dbNSFP / score files
+*.gz
+*.bgz
+*.tbi
+*.osa
+*.osa2
+sa_databases/
+data/
