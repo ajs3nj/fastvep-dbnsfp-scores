@@ -110,9 +110,19 @@ die()     { echo "ERROR: $*" >&2; exit 1; }
 
 # ============================== validation ===================================
 section "Validation"
-for f in "$MANIFEST" "$GFF3" "$FASTA" "$CACHE" "$TIER_SCRIPT" "$MODIFIER_GENES" "$CSQ_CONVERTER"; do
+for f in "$MANIFEST" "$FASTA" "$TIER_SCRIPT" "$MODIFIER_GENES" "$CSQ_CONVERTER"; do
   [[ -e "$f" ]] || die "file not found: $f"
 done
+# Need either the binary transcript cache OR the GFF3 (cache wins if both).
+if [[ -e "$CACHE" ]]; then
+  log "Using transcript cache: $CACHE"
+  GFF3=""   # signal: don't pass --gff3 to fastvep
+elif [[ -e "$GFF3" ]]; then
+  log "Using GFF3 (no cache found): $GFF3"
+  CACHE=""
+else
+  die "neither transcript cache nor GFF3 found (looked for $CACHE and $GFF3)"
+fi
 [[ -d "$SA_DIR" ]] || die "SA dir not found: $SA_DIR"
 command -v fastvep      >/dev/null || die "fastvep not on PATH"
 command -v bcftools     >/dev/null || die "bcftools not on PATH"
@@ -163,8 +173,15 @@ if [[ "$SKIP_ANNOTATE" == "0" ]]; then
     {
       echo "=== $(date) $sample_id annotating (VCF intermediate) ==="
       # Use VCF output so the full CSQ + FV_* INFO fields are preserved.
+      # Pass either --transcript-cache or --gff3, whichever was validated upstream.
+      backbone_args=()
+      if [[ -n "$CACHE" ]]; then
+        backbone_args=(--transcript-cache "$CACHE")
+      else
+        backbone_args=(--gff3 "$GFF3")
+      fi
       fastvep annotate -i "$vcf_path" -o "$out_vcf" \
-        --transcript-cache "$CACHE" \
+        "${backbone_args[@]}" \
         --fasta "$FASTA" \
         --sa-dir "$SA_DIR" \
         --output-format vcf \
@@ -193,7 +210,7 @@ if [[ "$SKIP_ANNOTATE" == "0" ]]; then
     echo "[$sample_id] done"
   }
   export -f process_one
-  export OUT_DIR CACHE FASTA SA_DIR PYTHON_BIN CSQ_CONVERTER
+  export OUT_DIR CACHE GFF3 FASTA SA_DIR PYTHON_BIN CSQ_CONVERTER
 
   # Process in parallel via xargs -P
   tail -n+2 "$MANIFEST" | \

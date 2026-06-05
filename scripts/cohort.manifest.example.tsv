@@ -1,5 +1,5 @@
-sample_id	vcf_path	phenotype	severity
-S001	/data/nf1/vcfs/S001.vcf.gz	NF1	severe
-S002	/data/nf1/vcfs/S002.vcf.gz	NF1	mild
-S003	/data/nf1/vcfs/S003.vcf.gz	NF1	severe
-S004	/data/nf1/vcfs/S004.vcf.gz	control	-
+sample_id	vcf_path
+S001	/data/nf1/vcfs/S001.vcf.gz
+S002	/data/nf1/vcfs/S002.vcf.gz
+S003	/data/nf1/vcfs/S003.vcf.gz
+S004	/data/nf1/vcfs/S004.vcf.gz
