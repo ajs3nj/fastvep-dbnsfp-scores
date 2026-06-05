@@ -4,13 +4,15 @@
 //! compiles and is unit-tested in isolation. Wire it into your fork's `dbnsfp` parser via the thin
 //! adapter described in INTEGRATION.md.
 //!
-//! It extracts AlphaMissense, ESM1b, REVEL and (coding) CADD from a dbNSFP v4.5+ TSV row, handling:
+//! It extracts AlphaMissense, ESM1b, and REVEL from a dbNSFP v4.5+ TSV row, handling:
 //!   * version-safe column lookup by header name (never fixed index),
 //!   * `;`-separated per-transcript values aligned to `Ensembl_transcriptid` (with broadcast of
-//!     single-cardinality columns such as REVEL/CADD),
+//!     single-cardinality columns such as REVEL),
 //!   * the `.` / empty missing-value token,
 //!   * fastSA v2 quantization: `value * multiplier -> u32`, with zigzag for SIGNED scores
-//!     (ESM1b, CADD raw) so negative values do not wrap.
+//!     (ESM1b) so negative values do not wrap.
+//!
+//! CADD is intentionally not pulled — see docs/tiering.md §1.2 for the design rationale.
 
 use std::collections::HashMap;
 
@@ -23,14 +25,12 @@ pub struct ScoreField {
     pub signed: bool,
 }
 
-/// The four scores we add via the dbNSFP route, plus their encoding choices.
+/// The three scores we add via the dbNSFP route, plus their encoding choices.
 /// (See docs/dbnsfp_score_columns.md for rationale.)
 pub const SCORE_FIELDS: &[ScoreField] = &[
     ScoreField { name: "alphamissense", multiplier: 1e6, signed: false },
     ScoreField { name: "esm1b",         multiplier: 1e6, signed: true  }, // LLR, negative
     ScoreField { name: "revel",         multiplier: 1e6, signed: false },
-    ScoreField { name: "cadd_phred",    multiplier: 1e3, signed: false },
-    ScoreField { name: "cadd_raw",      multiplier: 1e6, signed: true  }, // can be negative
 ];
 
 pub fn score_field(name: &str) -> Option<&'static ScoreField> {
@@ -171,8 +171,6 @@ pub struct VariantScores {
     pub alt: String,
     /// Per-variant (broadcast) scores.
     pub revel: Option<f32>,
-    pub cadd_phred: Option<f32>,
-    pub cadd_raw: Option<f32>,
     /// Per-transcript scores, aligned to `Ensembl_transcriptid`.
     pub transcripts: Vec<TranscriptScore>,
 }
@@ -202,8 +200,6 @@ pub fn parse_row(fields: &[&str], idx: &HeaderIndex) -> VariantScores {
 
     // Per-variant (single-value) scores.
     let revel = parse_opt_f32(get("REVEL_score"));
-    let cadd_phred = parse_opt_f32(get("CADD_phred"));
-    let cadd_raw = parse_opt_f32(get("CADD_raw"));
 
     // Per-transcript columns.
     let tx_ids = split_multi(get("Ensembl_transcriptid"));
@@ -251,7 +247,7 @@ pub fn parse_row(fields: &[&str], idx: &HeaderIndex) -> VariantScores {
         });
     }
 
-    VariantScores { chrom, pos, reference, alt, revel, cadd_phred, cadd_raw, transcripts }
+    VariantScores { chrom, pos, reference, alt, revel, transcripts }
 }
 
 // ---------------------------------------------------------------------------
@@ -287,25 +283,16 @@ mod tests {
         assert!((dec - 0.9871).abs() < 1e-5, "decoded {dec}");
     }
 
-    #[test]
-    fn cadd_raw_negative_roundtrips() {
-        let f = score_field("cadd_raw").unwrap();
-        let dec = dequantize(f, quantize(f, -2.345));
-        assert!((dec - (-2.345)).abs() < 1e-4, "decoded {dec}");
-    }
-
     fn idx_and_row() -> (HeaderIndex, Vec<&'static str>) {
         // Minimal header subset in arbitrary order to prove name-based lookup.
-        let header = "#chr\tpos(1-based)\tref\talt\taaref\taaalt\tEnsembl_transcriptid\tEnsembl_proteinid\tREVEL_score\tCADD_phred\tCADD_raw\tAlphaMissense_score\tAlphaMissense_pred\tESM1b_score\tESM1b_pred\tgenename";
+        let header = "#chr\tpos(1-based)\tref\talt\taaref\taaalt\tEnsembl_transcriptid\tEnsembl_proteinid\tREVEL_score\tAlphaMissense_score\tAlphaMissense_pred\tESM1b_score\tESM1b_pred\tgenename";
         let idx = HeaderIndex::from_header(header);
-        // Two transcripts; REVEL/CADD single (broadcast); ESM1b negative; second tx AM missing.
+        // Two transcripts; REVEL single (broadcast); ESM1b negative; second tx AM missing.
         let row = vec![
             "17", "43045712", "C", "T", "R", "Q",
             "ENST00000357654;ENST00000468300",
             "ENSP00000350283;ENSP00000417148",
             "0.842",          // REVEL (single)
-            "24.7",           // CADD_phred (single)
-            "3.21",           // CADD_raw (single, positive here)
             "0.9912;.",       // AlphaMissense per-tx, 2nd missing
             "P;.",            // AlphaMissense_pred
             "-8.4;-2.1",      // ESM1b per-tx (negative)
@@ -323,7 +310,6 @@ mod tests {
         assert_eq!(vs.chrom, "17");
         assert_eq!(vs.pos, 43045712);
         assert_eq!(vs.revel, Some(0.842));
-        assert_eq!(vs.cadd_phred, Some(24.7));
         assert_eq!(vs.transcripts.len(), 2);
 
         let t0 = &vs.transcripts[0];

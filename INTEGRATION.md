@@ -25,8 +25,7 @@ let vs = parse_row(&fields, &hidx);
 
 // Per-variant scores -> encode for the fastSA value array:
 if let Some(r) = vs.revel    { /* push quantize(score_field("revel").unwrap(), r) */ }
-if let Some(c) = vs.cadd_phred { /* push quantize(score_field("cadd_phred").unwrap(), c) */ }
-if let Some(c) = vs.cadd_raw   { /* push quantize(score_field("cadd_raw").unwrap(), c) */ } // SIGNED -> zigzag
+// CADD is intentionally not pulled — see docs/tiering.md §1.2.
 
 // Per-transcript scores: choose the transcript that matches the consequence's transcript at annotation
 // time. Two options:
@@ -59,8 +58,6 @@ pub alphamissense: Option<f32>,
 pub alphamissense_class: Option<String>,
 pub esm1b: Option<f32>,
 pub revel: Option<f32>,          // if not already present
-pub cadd_phred: Option<f32>,
-pub cadd_raw: Option<f32>,
 ```
 
 On read-back from the `.osa2` value array, decode with `dbnsfp_scores::dequantize(field, stored)` using the SAME
@@ -70,7 +67,7 @@ On read-back from the `.osa2` value array, decode with `dbnsfp_scores::dequantiz
 
 The tab formatter in `fastvep-io` emits a fixed column set (the manuscript notes a compact tab layout; the full
 field set lives in the 48-field CSQ). Your scores won't appear in `--output-format tab` unless you add columns.
-Add `AlphaMissense`, `AlphaMissense_pred`, `ESM1b`, `REVEL`, `CADD_PHRED`, `CADD_RAW` to:
+Add `AlphaMissense`, `AlphaMissense_pred`, `ESM1b`, `REVEL` to:
 
 - the tab header writer, and
 - the per-row writer, pulling from `SupplementaryAnnotation` (print `.` / empty for `None` to match VEP).
@@ -95,13 +92,12 @@ fastvep annotate -i sample.vcf --gff3 Homo_sapiens.GRCh38.115.gff3 \
   --sa-dir sa_databases/ --output-format tab --hgvs > sample.annotated.tab
 ```
 
-## Genome-wide CADD (later, optional)
+## CADD: not used
 
-dbNSFP's CADD is coding-only. If you later need intronic/regulatory CADD genome-wide, that's a *new* source
-(`--source cadd`) reading `whole_genome_SNVs.tsv.gz` + the indel file, modeled on the REVEL parser (positional,
-allele-specific, two values: `CADD_raw` signed, `CADD_phred` unsigned). Build it into `.osa2` once so per-variant
-lookups are Bloom-gated/LRU-cached rather than live tabix seeks — that, not the plugin, is what fixes the CADD
-slowdown. Say the word and I'll write that parser too.
+CADD is intentionally out — see `docs/tiering.md §1.2`. Non-coding classes rely on SpliceAI alone. If you later
+want CADD back, the route is a dedicated `--source cadd` Rust parser reading `whole_genome_SNVs.tsv.gz` + the
+indel file, two values per SNV (`CADD_raw` signed via zigzag, `CADD_phred` unsigned), built once into `.osa2`
+so per-variant lookups are Bloom-gated/LRU-cached rather than live tabix seeks. Not implemented here.
 
 ---
 

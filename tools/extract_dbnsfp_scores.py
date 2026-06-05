@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Extract AlphaMissense / ESM1b / REVEL / CADD from a dbNSFP v4.5+ TSV.
+"""Extract AlphaMissense / ESM1b / REVEL from a dbNSFP v4.5+ TSV.
+
+CADD is intentionally not pulled; see docs/tiering.md §1.2.
 
 Standalone (Python 3, stdlib only). Two uses:
   1. Get the scores today, without touching fastVEP's Rust, as a tidy per-(variant, transcript) table
@@ -39,8 +41,6 @@ COL_TX = "Ensembl_transcriptid"
 COL_PROT = "Ensembl_proteinid"
 COL_GENE = "genename"
 COL_REVEL = "REVEL_score"
-COL_CADD_PHRED = "CADD_phred"
-COL_CADD_RAW = "CADD_raw"
 COL_AM = "AlphaMissense_score"
 COL_AM_PRED = "AlphaMissense_pred"
 COL_ESM = "ESM1b_score"
@@ -49,7 +49,7 @@ COL_ESM_PRED = "ESM1b_pred"
 OUT_HEADER = [
     "chr", "pos", "ref", "alt", "aaref", "aaalt", "gene",
     "transcript", "protein",
-    "revel", "cadd_phred", "cadd_raw",
+    "revel",
     "alphamissense", "alphamissense_pred", "esm1b", "esm1b_pred",
 ]
 
@@ -112,7 +112,7 @@ def main():
             raise SystemExit(f"error: required column '{n}' not found in header; check dbNSFP version")
 
     have = {k: (k in col) for k in
-            [COL_AM, COL_AM_PRED, COL_ESM, COL_ESM_PRED, COL_REVEL, COL_CADD_PHRED, COL_CADD_RAW,
+            [COL_AM, COL_AM_PRED, COL_ESM, COL_ESM_PRED, COL_REVEL,
              COL_PROT, COL_GENE, COL_AAREF, COL_AAALT]}
     missing_cols = [k for k, v in have.items() if not v]
     if missing_cols:
@@ -141,8 +141,6 @@ def main():
             aaalt = field(parts, COL_AAALT)
 
             revel = clean(field(parts, COL_REVEL))
-            cadd_phred = clean(field(parts, COL_CADD_PHRED))
-            cadd_raw = clean(field(parts, COL_CADD_RAW))
 
             tx = split_multi(field(parts, COL_TX))
             prot = split_multi(field(parts, COL_PROT))
@@ -167,8 +165,6 @@ def main():
                     pick(tx, i) or MISSING,
                     pick(prot, i) or MISSING,
                     revel or MISSING,
-                    cadd_phred or MISSING,
-                    cadd_raw or MISSING,
                     am_i or MISSING,
                     pick(am_pred, i) or MISSING,
                     esm_i or MISSING,
