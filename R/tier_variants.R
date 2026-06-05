@@ -259,60 +259,98 @@ assign_tier_research <- function(v) {
   v[, tier := 4L]
   v[, tier_reason := "rare; no class-appropriate signal"]
 
+  # Snapshot evidence columns as locals. data.table's `i` evaluation looks up
+  # single-symbol or `!sym` filters in calling scope before column scope; using
+  # locals avoids the "is.found-in-calling-scope-but-also-a-column" error and
+  # also makes the row filters explicitly NA-safe (every column here is logical
+  # with NA already coerced to FALSE upstream in add_evidence).
+  rare           <- v$rare
+  constrained    <- v$constrained
+  nmd_escape     <- v$nmd_escape
+  loftee_lc      <- v$loftee_lc
+  loftee_hc      <- v$loftee_hc
+  loftee_present <- v$loftee_present
+  splice_high    <- v$splice_high
+  splice_likely  <- v$splice_likely
+  splice_flag    <- v$splice_flag
+  am_strong      <- v$am_strong
+  am_path        <- v$am_path
+  am_ambig       <- v$am_ambig
+  am_benign      <- v$am_benign
+  has_motif      <- v$has_motif
+  clinvar_plp    <- v$clinvar_plp
+  clinvar_blb    <- v$clinvar_blb
+  variant_class  <- v$variant_class
+
   # ---- pLoF ----
-  is_lof <- v$variant_class == "pLoF"
-  hc_or_unknown <- !v$loftee_present | v$loftee_hc
+  is_lof <- variant_class == "pLoF"
+  hc_or_unknown <- !loftee_present | loftee_hc
   v[is_lof & rare & constrained & !nmd_escape & hc_or_unknown,
     `:=`(tier = 1L, tier_reason = "pLoF in constrained gene; not NMD-escape (LOFTEE HC if present)")]
   v[is_lof & rare & (!constrained | nmd_escape | loftee_lc),
     `:=`(tier = 2L, tier_reason = "pLoF in non-constrained gene / NMD-escape / LOFTEE LC")]
 
   # ---- non-canonical splice ----
-  is_sp <- v$variant_class == "splice_noncanonical"
+  is_sp <- variant_class == "splice_noncanonical"
   v[is_sp & rare & splice_high,                       `:=`(tier = 1L, tier_reason = "non-canonical splice + SpliceAI>=0.8")]
   v[is_sp & rare & splice_likely & !splice_high,      `:=`(tier = 2L, tier_reason = "non-canonical splice + SpliceAI 0.5-0.8")]
   v[is_sp & rare & splice_flag & !splice_likely,      `:=`(tier = 3L, tier_reason = "non-canonical splice + SpliceAI 0.2-0.5")]
 
   # ---- missense ----
-  is_ms <- v$variant_class == "missense"
+  is_ms <- variant_class == "missense"
+  am_num <- num_col(v, COLS$alphamissense)
+  am_missing <- is.na(am_num)
   v[is_ms & rare & am_strong & constrained,
     `:=`(tier = 1L, tier_reason = "missense: AM>=0.85 in constrained gene")]
   v[is_ms & rare & am_path & !(am_strong & constrained),
     `:=`(tier = 2L, tier_reason = "missense: AM likely_pathogenic")]
   v[is_ms & rare & am_ambig & !am_path,
     `:=`(tier = 3L, tier_reason = "missense: AM ambiguous (0.34-0.564)")]
-  v[is_ms & rare & is.na(num_col(v, COLS$alphamissense)) & constrained,
+  v[is_ms & rare & am_missing & constrained,
     `:=`(tier = 3L, tier_reason = "rare missense in constrained gene; AM missing")]
 
   # ---- in-frame ----
-  is_if <- v$variant_class == "inframe"
+  is_if <- variant_class == "inframe"
   loeuf_v <- num_col(v, COLS$loeuf)
   v[is_if & rare & (T0(loeuf_v < CFG$loeuf_constrained) | splice_likely),
     `:=`(tier = 2L, tier_reason = "in-frame in constrained gene or SpliceAI>=0.5")]
-  v[is_if & rare & (constrained | splice_flag) & tier > 2L,
+  # `tier` here is read fresh from v so it reflects any earlier := updates.
+  v[is_if & rare & (constrained | splice_flag) & v$tier > 2L,
     `:=`(tier = 3L, tier_reason = "in-frame in moderately constrained or SpliceAI 0.2-0.5")]
 
   # ---- non-coding ----
-  is_nc <- v$variant_class == "noncoding"
+  is_nc <- variant_class == "noncoding"
   v[is_nc & rare & splice_likely,                      `:=`(tier = 2L, tier_reason = "non-coding + SpliceAI>=0.5 (cryptic splice)")]
   v[is_nc & rare & splice_flag & !splice_likely,       `:=`(tier = 3L, tier_reason = "non-coding + SpliceAI 0.2-0.5")]
 
   # ---- regulatory ----
-  is_reg <- v$variant_class == "regulatory"
+  is_reg <- variant_class == "regulatory"
   v[is_reg & rare & has_motif & splice_likely,         `:=`(tier = 2L, tier_reason = "regulatory: motif + SpliceAI>=0.5")]
   v[is_reg & rare & (has_motif | splice_flag),         `:=`(tier = 3L, tier_reason = "regulatory: motif or SpliceAI 0.2-0.5")]
 
   # ---- benign / common overrides (applied late) ----
-  v[is_ms & am_benign,                  `:=`(tier = 5L, tier_reason = "missense: AM likely_benign")]
-  v[!rare,                              `:=`(tier = 5L, tier_reason = "common (failed rarity gate)")]
-  v[T0(clinvar_blb),                    `:=`(tier = 5L, tier_reason = "ClinVar B/LB")]
-  v[T0(clinvar_plp),                    `:=`(tier = 1L, tier_reason = "ClinVar P/LP (>=1 star)")]
+  v[is_ms & am_benign,        `:=`(tier = 5L, tier_reason = "missense: AM likely_benign")]
+  v[!rare,                    `:=`(tier = 5L, tier_reason = "common (failed rarity gate)")]
+  v[clinvar_blb,              `:=`(tier = 5L, tier_reason = "ClinVar B/LB")]
+  v[clinvar_plp,              `:=`(tier = 1L, tier_reason = "ClinVar P/LP (>=1 star)")]
   v[]
 }
 
 # =========================== ACMG-strict mode ================================
 assign_class_acmg <- function(v) {
-  revel <- num_col(v, COLS$revel)
+  # Snapshot evidence columns as locals (same reason as in assign_tier_research).
+  am_path       <- v$am_path
+  am_benign     <- v$am_benign
+  revel_benign  <- v$revel_benign
+  splice_likely <- v$splice_likely
+  is_lof        <- v$is_lof
+  constrained   <- v$constrained
+  rare          <- v$rare
+  nmd_escape    <- v$nmd_escape
+  clinvar_plp   <- v$clinvar_plp
+  clinvar_blb   <- v$clinvar_blb
+  revel         <- num_col(v, COLS$revel)
+
   v[, pp3 := "none"]
   if (CFG$acmg_primary == "alphamissense") {
     v[am_path, pp3 := "PP3_supporting"]
@@ -325,8 +363,8 @@ assign_class_acmg <- function(v) {
   v[, bp4 := fifelse(am_benign | revel_benign, "BP4", "none")]
   v[, acmg_class := "VUS"]
   v[is_lof & constrained & rare & !nmd_escape, acmg_class := "LP_lof"]
-  v[T0(clinvar_plp),                          acmg_class := "P_clinvar"]
-  v[T0(clinvar_blb) | !rare,                  acmg_class := "B/LB"]
+  v[clinvar_plp,                              acmg_class := "P_clinvar"]
+  v[clinvar_blb | !rare,                      acmg_class := "B/LB"]
   # carry a numeric "tier" alias so the gene summary path can be shared.
   v[, tier := fcase(acmg_class %in% c("P_clinvar","LP_lof"), 1L,
                     acmg_class == "VUS", 4L,
