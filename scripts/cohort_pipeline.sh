@@ -212,13 +212,16 @@ if [[ "$SKIP_ANNOTATE" == "0" ]]; then
   export -f process_one
   export OUT_DIR CACHE GFF3 FASTA SA_DIR PYTHON_BIN CSQ_CONVERTER
 
-  # Process in parallel via xargs -P
-  tail -n+2 "$MANIFEST" | \
-    awk -F'\t' '{ print $1"\t"$2 }' | \
-    xargs -P "$THREADS" -I{} bash -c '
-      IFS=$"\t" read -r sid vcf <<< "{}"
-      process_one "$sid" "$vcf"
-    '
+  # Process in parallel. Use GNU parallel if available (cleaner tab handling),
+  # else fall back to xargs -n 2 with a space-delimited list (we know vcf paths
+  # in our manifest don't contain spaces; if they ever do, switch to parallel).
+  if command -v parallel >/dev/null 2>&1; then
+    tail -n+2 "$MANIFEST" | awk -F'\t' '{ print $1"\t"$2 }' | \
+      parallel -j "$THREADS" --colsep '\t' process_one {1} {2}
+  else
+    tail -n+2 "$MANIFEST" | awk -F'\t' '{ print $1, $2 }' | \
+      xargs -P "$THREADS" -n 2 bash -c 'process_one "$1" "$2"' _
+  fi
 
   log "Stage 1 complete"
 else
