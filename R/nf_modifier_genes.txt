@@ -1,0 +1,256 @@
+# Modifier-candidate gene list for NF / schwannomatosis
+# ---------------------------------------------------------------------------
+# Anchored on the four core disease genes: NF1, NF2, SMARCB1, LZTR1.
+# Three layers of inclusion per anchor:
+#   (1) Direct physical interactors  -- proteins shown to bind the anchor
+#       (literature-confirmed protein-protein interactions / complex members).
+#   (2) Canonical pathway effectors   -- well-established signaling pathway
+#       members in which the anchor functions (downstream/upstream signaling).
+#   (3) Published modifier / risk loci -- genes implicated by NF cohort studies
+#       in phenotype severity or tumor-progression risk.
+#
+# This is a curated STARTER list, not exhaustive. It mixes strong and weaker
+# evidence -- categories below reflect that. For a systematic interactor
+# expansion, see the STRING recipe at the bottom of this file.
+#
+# Format: one HGNC symbol per line. '#' starts a comment.
+# Pass with: --modifier-genes R/nf_modifier_genes.txt
+# ---------------------------------------------------------------------------
+
+# === Core disease genes (for compound-het / second-hit analyses) ===
+NF1
+NF2
+SMARCB1
+LZTR1
+
+# ===========================================================================
+# NF1 (neurofibromin, RasGAP)
+# ===========================================================================
+# --- Direct physical interactors (confirmed binders of neurofibromin) ---
+SPRED1                  # EVH1-GRD; recruits NF1 to membrane RAS (Stowe 2012)
+SPRED2                  # paralogue; same mechanism
+LRP1                    # binds NF1 cytoplasmic tail
+YWHAZ                   # 14-3-3 zeta; phospho-NF1 (Feng 2004)
+YWHAE                   # 14-3-3 epsilon
+YWHAB                   # 14-3-3 beta
+VCP                     # p97/VCP-NF1 interaction
+CAV1                    # caveolin; membrane localization
+SYDE1                   # Rho-GAP partner
+SYDE2                   # Rho-GAP partner
+TUBB                    # tubulin (microtubule association)
+PRKAR2B                 # PKA RII-beta; cAMP/PKA scaffold (Tong 2002)
+KIF22                   # kinesin (recent)
+
+# --- RAS/MAPK pathway effectors (NF1's signaling context) ---
+# RAS family (substrates of NF1's GAP activity)
+KRAS
+NRAS
+HRAS
+RRAS
+RRAS2
+MRAS
+RIT1
+# RAF kinases
+BRAF
+RAF1
+ARAF
+KSR1
+KSR2
+# MEK / ERK cascade
+MAP2K1                  # MEK1
+MAP2K2                  # MEK2
+MAPK1                   # ERK2
+MAPK3                   # ERK1
+MAP3K1
+DUSP4
+DUSP5
+DUSP6
+# Upstream / regulators
+SOS1
+SOS2
+GRB2
+SHC1
+SHC2
+SHC3
+PTPN11                  # SHP2
+RASA1
+RASA2
+RASA3
+DAB2IP
+SHOC2
+CBL
+CBLB
+IQGAP1
+IQGAP2
+# Related RASopathy genes (overlapping phenotype space)
+A2ML1
+MAGEL2
+PPP1CB
+
+# --- NF1 published modifier / MPNST risk loci ---
+CDKN2A                  # 9p21; MPNST progression
+CDKN2B                  # 9p21
+CDKN2B-AS1              # ANRIL lncRNA at 9p21
+MTAP                    # 9p21 neighbour
+ATM                     # DNA damage / cancer risk modifier
+TP53                    # canonical second hit in MPNST
+RB1                     # MPNST progression
+EED                     # PRC2; lost in MPNST (Lee/De Raedt 2014)
+SUZ12                   # PRC2; lost in MPNST
+EZH2                    # PRC2 catalytic
+BRD9                    # ncBAF; SWI/SNF-PRC2 axis
+MDM2
+MDM4
+H3F3A
+
+# ===========================================================================
+# NF2 (merlin, Hippo pathway scaffold)
+# ===========================================================================
+# --- Direct physical interactors of merlin ---
+ERBIN                   # merlin C-terminal binder (Rangwala 2005)
+ERBB2IP                 # older HGNC symbol for ERBIN; include for synonym matching
+AMOT                    # angiomotin; merlin partner (Yi 2011)
+AMOTL1
+AMOTL2
+CD44                    # extracellular merlin partner (Morrison 2001)
+PXN                     # paxillin (Fernandez-Valle 2002)
+LAYN                    # layilin
+SCHIP1                  # schwannomin-interacting protein
+EZR                     # ezrin (ERM family)
+RDX                     # radixin
+MSN                     # moesin
+PAK1                    # antagonized by merlin (Hirokawa 2004)
+PAK2
+PRR14L                  # recent merlin partner
+DCAF1                   # CRL4-DCAF1 ubiquitin ligase / merlin substrate
+
+# --- Hippo pathway (canonical NF2 effector network) ---
+LATS1
+LATS2
+STK3                    # MST2
+STK4                    # MST1
+SAV1
+MOB1A
+MOB1B
+YAP1
+WWTR1                   # TAZ
+TEAD1
+TEAD2
+TEAD3
+TEAD4
+NF2                     # already listed; merlin
+WWC1                    # Kibra
+
+# --- mTOR / PI3K context (merlin regulates mTORC1) ---
+PIK3CA
+PIK3CB
+AKT1
+AKT2
+MTOR
+RPTOR
+RICTOR
+TSC1
+TSC2
+RHEB
+# Rho GTPases (merlin-Rac regulation)
+RAC1
+RHOA
+CDC42
+
+# --- NF2 published modifier / VS progression ---
+VEGFA
+HSP90AA1
+ERBB2
+ERBB3
+NRG1
+MERTK
+SMARCB1                 # overlap with schwannomatosis
+LZTR1                   # overlap with schwannomatosis
+
+# ===========================================================================
+# SMARCB1 (BAF / SWI/SNF complex)
+# ===========================================================================
+# --- BAF complex partners (direct complex members) ---
+SMARCA4                 # BRG1
+SMARCA2                 # BRM
+ARID1A                  # BAF complex
+ARID1B
+ARID2                   # PBAF specific
+SMARCC1
+SMARCC2
+SMARCE1
+SMARCD1
+SMARCD2
+SMARCD3
+PBRM1                   # PBAF specific
+BCL7A
+BCL7B
+BCL7C
+BCL11A
+BCL11B
+DPF1
+DPF2
+DPF3
+BRD9                    # ncBAF specific (also listed under NF1 modifier)
+BRD7                    # PBAF specific
+ACTL6A
+ACTL6B
+SS18
+SS18L1
+BICRA                   # GLTSCR1; ncBAF
+BICRAL                  # GLTSCR1L
+
+# --- Antagonist / partner complexes ---
+# PRC2 (antagonized by SWI/SNF; EED/SUZ12/EZH2 already listed)
+# Histone readers / linked machinery
+KDM6A
+KDM6B
+KMT2D
+ASH2L
+
+# --- SMARCB1 published modifier / second hit ---
+NF2                     # rhabdoid / MRT context
+TP53                    # cooperating loss
+
+# ===========================================================================
+# LZTR1 (BTB/Kelch substrate adapter for CUL3 E3 ligase; ubiquitinates RAS)
+# ===========================================================================
+# --- Direct interactors / complex ---
+CUL3                    # E3 ligase scaffold
+RBX1                    # ring-box; CRL3 component
+KEAP1                   # paralogue BTB-Kelch
+KLHL12
+KLHL21
+KLHL22
+KCTD7                   # related BTB family
+# RAS substrates already covered under NF1 block
+NEDD8                   # cullin neddylation
+
+# --- LZTR1 published modifier / schwannomatosis context ---
+SMARCB1                 # already listed
+NF2                     # already listed
+COQ6                    # reported NF-context modifier (weaker evidence)
+
+# ---------------------------------------------------------------------------
+# Programmatic expansion via STRING (recipe)
+# ---------------------------------------------------------------------------
+# If you want a more exhaustive, evidence-weighted set, fetch direct
+# physical-interaction partners of NF1/NF2/SMARCB1/LZTR1 from STRING v12 and
+# append. From a directory with the STRING human files:
+#
+#   # Download once:
+#   wget https://stringdb-static.org/download/protein.physical.links.detailed.v12.0/9606.protein.physical.links.detailed.v12.0.txt.gz
+#   wget https://stringdb-static.org/download/protein.info.v12.0/9606.protein.info.v12.0.txt.gz
+#
+#   # Pull partners above experimental+database confidence >= 700:
+#   zcat 9606.protein.info.v12.0.txt.gz | awk -F'\t' '
+#     $2 ~ /^(NF1|NF2|SMARCB1|LZTR1)$/ {print $1"\t"$2}' > anchors.tsv
+#   zcat 9606.protein.physical.links.detailed.v12.0.txt.gz | awk -F' ' '
+#     NR==FNR{a[$1]=$2; next}
+#     ($1 in a || $2 in a) && ($7 >= 700 || $8 >= 700) {
+#       print ($1 in a ? a[$1] : a[$2])"\t"($1 in a ? $2 : $1)"\t"$10
+#     }' anchors.tsv - > partners.tsv
+#   # Map partners back to symbols and dedupe; append to this file.
+#
+# Cross-reference with BioGRID / IntAct for confirmation before treating any
+# STRING-only hit as a real binder.
