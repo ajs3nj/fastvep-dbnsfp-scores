@@ -232,24 +232,26 @@ fi
 if [[ "$SKIP_MERGE" == "0" ]]; then
   section "Stage 2: cohort merge"
 
-  # 2a. Per-sample dedupe to variant keys; one row per (variant, sample).
-  log "  2a) building per-sample variant sets..."
-  > "$OUT_DIR/_sample_variants.tsv"
-  for f in "$OUT_DIR/per_sample/"*.annotated.tab; do
-    [[ -s "$f" ]] || continue
-    s=$(basename "$f" .annotated.tab)
-    awk -F'\t' -v s="$s" '
-      NR > 1 && !seen[$1"\t"$2"\t"$3"\t"$4]++ {
-        print $1"\t"$2"\t"$3"\t"$4"\t"s
-      }' "$f" >> "$OUT_DIR/_sample_variants.tsv"
-  done
-
-  # 2b. Count distinct samples per variant.
-  log "  2b) counting samples per variant..."
+  # 2ab. Per-sample dedupe + cohort-wide count in ONE pass, no intermediate file.
+  # The `seen` hash tracks per-sample uniqueness and is cleared between files via
+  # `delete`. Only the global `count` hash persists (~10-30M variants ~ 1-1.5 GB).
+  # The old write-to-disk-then-aggregate version produced a ~30+ GB intermediate
+  # at cohort scale (one row per (variant, sample)) and was disk-bound.
+  log "  2ab) counting samples per variant (single-pass)..."
   awk -F'\t' '
-    { c[$1"\t"$2"\t"$3"\t"$4]++ }
-    END { for (k in c) print k"\t"c[k] }
-  ' "$OUT_DIR/_sample_variants.tsv" > "$OUT_DIR/_variant_counts.tsv"
+    FNR == 1 {
+      for (k in seen) delete seen[k]   # reset per-sample dedupe set
+      next                              # skip header
+    }
+    {
+      key = $1"\t"$2"\t"$3"\t"$4
+      if (!(key in seen)) {
+        seen[key] = 1
+        count[key]++
+      }
+    }
+    END { for (k in count) print k"\t"count[k] }
+  ' "$OUT_DIR/per_sample/"*.annotated.tab > "$OUT_DIR/_variant_counts.tsv"
 
   # 2c. Dedupe annotated rows by (chrom,pos,ref,alt,transcript).
   log "  2c) deduplicating annotated rows..."
