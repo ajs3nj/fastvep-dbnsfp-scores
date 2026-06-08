@@ -232,38 +232,53 @@ fi
 if [[ "$SKIP_MERGE" == "0" ]]; then
   section "Stage 2: cohort merge"
 
+  # Gather the per-sample annotated.tab files via a glob into an array so we
+  # don't pipe `ls | head -1` (which trips `set -euo pipefail` via SIGPIPE).
+  shopt -s nullglob
+  ann_files=("$OUT_DIR/per_sample/"*.annotated.tab)
+  shopt -u nullglob
+  [[ ${#ann_files[@]} -gt 0 ]] || die "no annotated.tab files found in $OUT_DIR/per_sample/"
+  first_tab="${ann_files[0]}"
+
   # 2ab. Per-sample dedupe + cohort-wide count in ONE pass, no intermediate file.
   # The `seen` hash tracks per-sample uniqueness and is cleared between files via
   # `delete`. Only the global `count` hash persists (~10-30M variants ~ 1-1.5 GB).
-  # The old write-to-disk-then-aggregate version produced a ~30+ GB intermediate
-  # at cohort scale (one row per (variant, sample)) and was disk-bound.
-  log "  2ab) counting samples per variant (single-pass)..."
-  awk -F'\t' '
-    FNR == 1 {
-      for (k in seen) delete seen[k]   # reset per-sample dedupe set
-      next                              # skip header
-    }
-    {
-      key = $1"\t"$2"\t"$3"\t"$4
-      if (!(key in seen)) {
-        seen[key] = 1
-        count[key]++
+  # Resumable: skip if a non-empty _variant_counts.tsv already exists.
+  if [[ -s "$OUT_DIR/_variant_counts.tsv" ]]; then
+    log "  2ab) skipping (existing _variant_counts.tsv: $(du -h "$OUT_DIR/_variant_counts.tsv" | cut -f1))"
+  else
+    log "  2ab) counting samples per variant (single-pass)..."
+    awk -F'\t' '
+      FNR == 1 {
+        for (k in seen) delete seen[k]
+        next
       }
-    }
-    END { for (k in count) print k"\t"count[k] }
-  ' "$OUT_DIR/per_sample/"*.annotated.tab > "$OUT_DIR/_variant_counts.tsv"
+      {
+        key = $1"\t"$2"\t"$3"\t"$4
+        if (!(key in seen)) {
+          seen[key] = 1
+          count[key]++
+        }
+      }
+      END { for (k in count) print k"\t"count[k] }
+    ' "${ann_files[@]}" > "$OUT_DIR/_variant_counts.tsv"
+  fi
 
   # 2c. Dedupe annotated rows by (chrom,pos,ref,alt,transcript).
-  log "  2c) deduplicating annotated rows..."
-  first_tab=$(ls "$OUT_DIR/per_sample/"*.annotated.tab | head -1)
-  head -1 "$first_tab" > "$OUT_DIR/_cohort.uniq.tab"
-  # Determine transcript column index from header (default 7 in fastVEP tab)
-  TCOL=$(head -1 "$first_tab" | awk -F'\t' '{ for (i=1;i<=NF;i++) if ($i=="transcript") print i }')
-  TCOL=${TCOL:-7}
-  for f in "$OUT_DIR/per_sample/"*.annotated.tab; do
-    tail -n+2 "$f"
-  done | awk -F'\t' -v tc="$TCOL" '!seen[$1"\t"$2"\t"$3"\t"$4"\t"$tc]++' \
-       >> "$OUT_DIR/_cohort.uniq.tab"
+  # Resumable: skip if a non-empty _cohort.uniq.tab already exists.
+  if [[ -s "$OUT_DIR/_cohort.uniq.tab" ]]; then
+    log "  2c) skipping (existing _cohort.uniq.tab: $(du -h "$OUT_DIR/_cohort.uniq.tab" | cut -f1))"
+  else
+    log "  2c) deduplicating annotated rows..."
+    head -1 "$first_tab" > "$OUT_DIR/_cohort.uniq.tab"
+    # Determine transcript column index from header (default 7 in fastVEP tab).
+    TCOL=$(head -1 "$first_tab" | awk -F'\t' '{ for (i=1;i<=NF;i++) if ($i=="transcript") print i }')
+    TCOL=${TCOL:-7}
+    awk -F'\t' -v tc="$TCOL" '
+      FNR == 1 { next }  # skip header in every file
+      { if (!seen[$1"\t"$2"\t"$3"\t"$4"\t"$tc]++) print }
+    ' "${ann_files[@]}" >> "$OUT_DIR/_cohort.uniq.tab"
+  fi
 
   # 2d. Join sample counts onto annotated rows as n_samples_annotated.
   log "  2d) attaching n_samples_annotated column..."
@@ -276,12 +291,18 @@ if [[ "$SKIP_MERGE" == "0" ]]; then
     > "$OUT_DIR/cohort.annotated.tab"
 
   # 2e. Concatenate per-sample genotype TSVs (no dedupe needed).
-  log "  2e) concatenating genotype TSVs..."
-  first_gt=$(ls "$OUT_DIR/per_sample/"*.genotypes.tsv | head -1)
-  head -1 "$first_gt" > "$OUT_DIR/cohort.genotypes.tsv"
-  for f in "$OUT_DIR/per_sample/"*.genotypes.tsv; do
-    tail -n+2 "$f"
-  done >> "$OUT_DIR/cohort.genotypes.tsv"
+  # Resumable: skip if a non-empty cohort.genotypes.tsv already exists.
+  if [[ -s "$OUT_DIR/cohort.genotypes.tsv" ]]; then
+    log "  2e) skipping (existing cohort.genotypes.tsv: $(du -h "$OUT_DIR/cohort.genotypes.tsv" | cut -f1))"
+  else
+    log "  2e) concatenating genotype TSVs..."
+    shopt -s nullglob
+    gt_files=("$OUT_DIR/per_sample/"*.genotypes.tsv)
+    shopt -u nullglob
+    [[ ${#gt_files[@]} -gt 0 ]] || die "no genotype TSVs found in $OUT_DIR/per_sample/"
+    head -1 "${gt_files[0]}" > "$OUT_DIR/cohort.genotypes.tsv"
+    awk 'FNR == 1 { next } { print }' "${gt_files[@]}" >> "$OUT_DIR/cohort.genotypes.tsv"
+  fi
 
   rm -f "$OUT_DIR/_sample_variants.tsv" \
         "$OUT_DIR/_variant_counts.tsv" \
