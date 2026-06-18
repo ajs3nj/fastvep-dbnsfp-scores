@@ -131,6 +131,14 @@ command -v "$PYTHON_BIN" >/dev/null || die "$PYTHON_BIN not on PATH"
 
 mkdir -p "$OUT_DIR/per_sample" "$OUT_DIR/logs"
 
+# Point GNU parallel (and any other temp-file-creators) at a directory on the
+# output volume rather than /tmp, which is often tiny on containerized hosts
+# (we've seen 64M /dev/shm and similarly constrained /tmp). With 8 parallel
+# fastvep workers, even modest per-job output buffering fills /tmp quickly.
+export TMPDIR="$OUT_DIR/_parallel_tmp"
+mkdir -p "$TMPDIR"
+log "TMPDIR=$TMPDIR  ($(df -h "$TMPDIR" | awk 'NR==2{print $4" free"}'))"
+
 # Validate manifest header. First two columns must be sample_id and vcf_path.
 # Any additional columns are passed through as sample metadata.
 header=$(head -1 "$MANIFEST")
@@ -161,11 +169,15 @@ if [[ "$SKIP_ANNOTATE" == "0" ]]; then
   process_one() {
     local sample_id="$1" vcf_path="$2"
     local out_vcf="$OUT_DIR/per_sample/${sample_id}.annotated.vcf"
-    local out_tab="$OUT_DIR/per_sample/${sample_id}.annotated.tab"
+    # Write gzipped per-sample tabs (~80% smaller; downstream awks read via zcat
+    # globbing on both .tab and .tab.gz). Resume check below accepts either.
+    local out_tab="$OUT_DIR/per_sample/${sample_id}.annotated.tab.gz"
+    local out_tab_uncompressed="$OUT_DIR/per_sample/${sample_id}.annotated.tab"
     local out_gt="$OUT_DIR/per_sample/${sample_id}.genotypes.tsv"
     local log_file="$OUT_DIR/logs/${sample_id}.log"
 
-    if [[ -s "$out_tab" && -s "$out_gt" ]]; then
+    # Accept either compressed (new) or uncompressed (already-done from a prior run).
+    if [[ ( -s "$out_tab" || -s "$out_tab_uncompressed" ) && -s "$out_gt" ]]; then
       echo "[$sample_id] cached"
       return 0
     fi
@@ -232,13 +244,23 @@ fi
 if [[ "$SKIP_MERGE" == "0" ]]; then
   section "Stage 2: cohort merge"
 
-  # Gather the per-sample annotated.tab files via a glob into an array so we
-  # don't pipe `ls | head -1` (which trips `set -euo pipefail` via SIGPIPE).
+  # Gather the per-sample annotated.tab files. Glob both .tab and .tab.gz so a
+  # cohort with mixed compression (older samples uncompressed, newer ones gzipped)
+  # works through Stage 2 transparently.
   shopt -s nullglob
-  ann_files=("$OUT_DIR/per_sample/"*.annotated.tab)
+  ann_files=("$OUT_DIR/per_sample/"*.annotated.tab "$OUT_DIR/per_sample/"*.annotated.tab.gz)
   shopt -u nullglob
-  [[ ${#ann_files[@]} -gt 0 ]] || die "no annotated.tab files found in $OUT_DIR/per_sample/"
+  [[ ${#ann_files[@]} -gt 0 ]] || die "no annotated.tab(.gz) files found in $OUT_DIR/per_sample/"
   first_tab="${ann_files[0]}"
+
+  # Helper to stream a file's contents (handles both plain and gzipped).
+  stream_tab() {
+    case "$1" in
+      *.gz) zcat "$1" ;;
+      *)    cat  "$1" ;;
+    esac
+  }
+  export -f stream_tab 2>/dev/null || true
 
   # 2ab. Per-sample dedupe + cohort-wide count in ONE pass, no intermediate file.
   # The `seen` hash tracks per-sample uniqueness and is cleared between files via
@@ -247,21 +269,34 @@ if [[ "$SKIP_MERGE" == "0" ]]; then
   if [[ -s "$OUT_DIR/_variant_counts.tsv" ]]; then
     log "  2ab) skipping (existing _variant_counts.tsv: $(du -h "$OUT_DIR/_variant_counts.tsv" | cut -f1))"
   else
-    log "  2ab) counting samples per variant (single-pass)..."
-    awk -F'\t' '
-      FNR == 1 {
-        for (k in seen) delete seen[k]
-        next
-      }
-      {
-        key = $1"\t"$2"\t"$3"\t"$4
-        if (!(key in seen)) {
-          seen[key] = 1
-          count[key]++
+    log "  2ab) counting samples per variant (single-pass, gzip-aware)..."
+    # Concat all per-sample files into one stream, marking file boundaries with
+    # a sentinel line so awk can reset the per-sample dedupe hash between files.
+    # Works for both plain .tab and gzipped .tab.gz inputs.
+    (
+      for f in "${ann_files[@]}"; do
+        printf '@@FILE@@\n'
+        case "$f" in
+          *.gz) zcat "$f" ;;
+          *)    cat  "$f" ;;
+        esac
+      done
+    ) | awk -F'\t' '
+        /^@@FILE@@$/ {
+          for (k in seen) delete seen[k]
+          skip_header = 1
+          next
         }
-      }
-      END { for (k in count) print k"\t"count[k] }
-    ' "${ann_files[@]}" > "$OUT_DIR/_variant_counts.tsv"
+        skip_header { skip_header = 0; next }
+        {
+          key = $1"\t"$2"\t"$3"\t"$4
+          if (!(key in seen)) {
+            seen[key] = 1
+            count[key]++
+          }
+        }
+        END { for (k in count) print k"\t"count[k] }
+      ' > "$OUT_DIR/_variant_counts.tsv"
   fi
 
   # 2c. Dedupe annotated rows by (chrom,pos,ref,alt,transcript).
@@ -269,15 +304,29 @@ if [[ "$SKIP_MERGE" == "0" ]]; then
   if [[ -s "$OUT_DIR/_cohort.uniq.tab" ]]; then
     log "  2c) skipping (existing _cohort.uniq.tab: $(du -h "$OUT_DIR/_cohort.uniq.tab" | cut -f1))"
   else
-    log "  2c) deduplicating annotated rows..."
-    head -1 "$first_tab" > "$OUT_DIR/_cohort.uniq.tab"
-    # Determine transcript column index from header (default 7 in fastVEP tab).
-    TCOL=$(head -1 "$first_tab" | awk -F'\t' '{ for (i=1;i<=NF;i++) if ($i=="transcript") print i }')
+    log "  2c) deduplicating annotated rows (gzip-aware)..."
+    # Header from the first file (zcat if gzipped)
+    stream_tab "$first_tab" | head -1 > "$OUT_DIR/_cohort.uniq.tab"
+    TCOL=$(stream_tab "$first_tab" | head -1 | awk -F'\t' \
+      '{ for (i=1;i<=NF;i++) if ($i=="transcript") print i }')
     TCOL=${TCOL:-7}
-    awk -F'\t' -v tc="$TCOL" '
-      FNR == 1 { next }  # skip header in every file
-      { if (!seen[$1"\t"$2"\t"$3"\t"$4"\t"$tc]++) print }
-    ' "${ann_files[@]}" >> "$OUT_DIR/_cohort.uniq.tab"
+
+    # Stream all per-sample files (decompressed if needed) through a cohort-wide
+    # dedupe on (chrom,pos,ref,alt,transcript). No per-file reset needed -- this
+    # is a cohort-level dedupe, not per-sample. Skip headers via FILE markers.
+    (
+      for f in "${ann_files[@]}"; do
+        printf '@@FILE@@\n'
+        case "$f" in
+          *.gz) zcat "$f" ;;
+          *)    cat  "$f" ;;
+        esac
+      done
+    ) | awk -F'\t' -v tc="$TCOL" '
+        /^@@FILE@@$/ { skip_header = 1; next }
+        skip_header  { skip_header = 0; next }
+        { if (!seen[$1"\t"$2"\t"$3"\t"$4"\t"$tc]++) print }
+      ' >> "$OUT_DIR/_cohort.uniq.tab"
   fi
 
   # 2d. Join sample counts onto annotated rows as n_samples_annotated.

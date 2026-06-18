@@ -143,7 +143,13 @@ def main():
     fv_fields = {}
 
     n_rows = 0
-    with open_vcf(args.input) as fh, open(args.output, "w") as out:
+    # Write gzip if the output path ends in .gz or .bgz (saves ~80% disk).
+    if args.output.endswith(".gz") or args.output.endswith(".bgz"):
+        out_open = lambda p: io.TextIOWrapper(gzip.open(p, "wb"), encoding="utf-8")
+    else:
+        out_open = lambda p: open(p, "w", encoding="utf-8")
+
+    with open_vcf(args.input) as fh, out_open(args.output) as out:
         out.write("\t".join(OUT_COLS) + "\n")
 
         for line in fh:
