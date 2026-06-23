@@ -301,13 +301,18 @@ if [[ "$SKIP_MERGE" == "0" ]]; then
 
   # 2c. Dedupe annotated rows by (chrom,pos,ref,alt,transcript).
   # Resumable: skip if a non-empty _cohort.uniq.tab already exists.
-  if [[ -s "$OUT_DIR/_cohort.uniq.tab" ]]; then
+  # Resume check: skip ONLY if the file is non-trivially large (a header-only
+  # 410-byte stub from an interrupted Stage 2c shouldn't qualify as "done").
+  if [[ -s "$OUT_DIR/_cohort.uniq.tab" ]] && [[ $(wc -l < "$OUT_DIR/_cohort.uniq.tab") -gt 1 ]]; then
     log "  2c) skipping (existing _cohort.uniq.tab: $(du -h "$OUT_DIR/_cohort.uniq.tab" | cut -f1))"
   else
     log "  2c) deduplicating annotated rows (gzip-aware)..."
-    # Header from the first file (zcat if gzipped)
-    stream_tab "$first_tab" | head -1 > "$OUT_DIR/_cohort.uniq.tab"
-    TCOL=$(stream_tab "$first_tab" | head -1 | awk -F'\t' \
+    # Read the header without `head -1` -- that would SIGPIPE zcat and
+    # pipefail+errexit would kill the script silently. The subshell with
+    # pipefail disabled lets us read the first line and discard the rest.
+    header_line=$( set +o pipefail; stream_tab "$first_tab" | head -1 )
+    printf '%s\n' "$header_line" > "$OUT_DIR/_cohort.uniq.tab"
+    TCOL=$(printf '%s\n' "$header_line" | awk -F'\t' \
       '{ for (i=1;i<=NF;i++) if ($i=="transcript") print i }')
     TCOL=${TCOL:-7}
 
