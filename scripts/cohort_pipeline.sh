@@ -52,6 +52,11 @@ Optional:
   --include-sex-chroms   Keep chrX/chrY variants (default: drop them so cohort
                          tiering doesn't have to reason about hemizygous dosage
                          or split by sex). Mitochondrial (chrM/MT) is always kept.
+  --filter-allow-missing-popmax
+                         (Stage 3) Treat variants with missing gnomAD popmax as
+                         rare-enough-to-keep. Default OFF: missing popmax does
+                         not bypass the rarity gate, since at cohort scale that
+                         rule keeps ~90% of non-coding variants and OOMs R.
   -h, --help             This message
 
 Manifest example: see scripts/cohort.manifest.example.tsv
@@ -68,6 +73,7 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 AF_MAX="1e-4"; FILTER_AF="0.01"
 SKIP_ANNOTATE=0; SKIP_MERGE=0
 INCLUDE_SEX_CHROMS=0   # default: drop X/Y to avoid hemizygous / dosage complexity
+ALLOW_MISSING_POPMAX=0 # default: variants with no popmax need other signal to pass filter
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -86,6 +92,7 @@ while [[ $# -gt 0 ]]; do
     --skip-annotate)   SKIP_ANNOTATE=1;     shift ;;
     --skip-merge)      SKIP_MERGE=1;        shift ;;
     --include-sex-chroms) INCLUDE_SEX_CHROMS=1; shift ;;
+    --filter-allow-missing-popmax) ALLOW_MISSING_POPMAX=1; shift ;;
     -h|--help)         usage ;;
     *) echo "Unknown arg: $1" >&2; usage ;;
   esac
@@ -373,14 +380,25 @@ fi
 section "Stage 3: pre-filter"
 [[ "$INCLUDE_SEX_CHROMS" == "0" ]] && log "  excluding chrX/chrY (override: --include-sex-chroms)"
 
-awk -F'\t' -v thresh="$FILTER_AF" -v drop_xy="$((1 - INCLUDE_SEX_CHROMS))" '
+# Keep rule (any one is sufficient):
+#   - HIGH or MODERATE consequence (coding hits — always)
+#   - SpliceAI ds_max >= 0.2 (cryptic splice signal — always)
+#   - clin_sig non-empty (ClinVar opinion — always)
+#   - gnomad popmax EXPLICITLY <= threshold (genuinely rare)
+#
+# Note: missing popmax does NOT bypass the rarity gate. Earlier versions of
+# this script treated "missing popmax = keep", which kept >90% of non-coding
+# variants and produced a 100+ GB filtered cohort that OOM-killed R. Variants
+# without functional signal AND without explicit rarity evidence are dropped.
+# Use --filter-allow-missing-popmax to restore the loose behaviour if needed.
+awk -F'\t' -v thresh="$FILTER_AF" -v drop_xy="$((1 - INCLUDE_SEX_CHROMS))" \
+    -v allow_missing_pmax="$ALLOW_MISSING_POPMAX" '
   NR == 1 {
     for (i=1; i<=NF; i++) col[$i] = i
     print
     next
   }
   {
-    # Drop sex chromosomes unless --include-sex-chroms is set.
     if (drop_xy) {
       chrom = $col["chrom"]
       if (chrom == "X" || chrom == "Y" || chrom == "chrX" || chrom == "chrY") next
@@ -392,7 +410,8 @@ awk -F'\t' -v thresh="$FILTER_AF" -v drop_xy="$((1 - INCLUDE_SEX_CHROMS))" '
     else if (col["clin_sig"] && $col["clin_sig"] != "" && $col["clin_sig"] != ".") keep = 1
     else if (col["gnomad_popmax_af"]) {
       af = $col["gnomad_popmax_af"]
-      if (af == "" || af == "." || af+0 <= thresh) keep = 1
+      if (af != "" && af != "." && af+0 <= thresh) keep = 1
+      else if (allow_missing_pmax && (af == "" || af == ".")) keep = 1
     }
     if (keep) print
   }
@@ -403,14 +422,159 @@ n_post=$(($(wc -l < "$OUT_DIR/cohort.filtered.tab") - 1))
 [[ "$n_pre" -gt 0 ]] && pct=$(awk "BEGIN{printf \"%.1f\", $n_post*100/$n_pre}") || pct="0.0"
 log "Pre-filter retained $n_post / $n_pre rows (${pct}%)"
 
+# ============================== Stage 3.5: cohort summary + join =============
+# Pre-aggregate the genotype long table into a per-variant summary, then attach
+# those columns to the filtered table. This keeps tier_variants.R's input small
+# (no need to fread the 30+ GB long genotype table inside R, which OOM-killed
+# the script at cohort scale). The R script natively handles inputs that already
+# have cohort_ac/cohort_an/cohort_af/n_het/n_hom/n_carriers columns -- it just
+# skips its own per_variant_cohort() step when --genotypes is omitted.
+section "Stage 3.5: per-variant cohort summary"
+
+# 3.5a: aggregate genotypes
+if [[ -s "$OUT_DIR/cohort.variant_summary.tsv" ]]; then
+  log "  3.5a) skipping (existing cohort.variant_summary.tsv: $(du -h "$OUT_DIR/cohort.variant_summary.tsv" | cut -f1))"
+else
+  log "  3.5a) aggregating cohort.genotypes.tsv into per-variant summary..."
+  awk -F'\t' '
+    NR == 1 { next }
+    {
+      key = $1 SUBSEP $2 SUBSEP $3 SUBSEP $4
+      if      ($6 == "0/0" || $6 == "0|0")                                { called[key]++ }
+      else if ($6 == "0/1" || $6 == "1/0" || $6 == "0|1" || $6 == "1|0")  { called[key]++; het[key]++; car[key]++ }
+      else if ($6 == "1/1" || $6 == "1|1")                                { called[key]++; hom[key]++; car[key]++ }
+    }
+    END {
+      print "chrom\tpos\tref\talt\tcohort_ac\tcohort_an\tcohort_af\tn_het\tn_hom\tn_carriers"
+      for (k in called) {
+        split(k, a, SUBSEP)
+        h = het[k]+0; H = hom[k]+0
+        ac = h + 2*H; an = 2*called[k]; af = (an>0) ? ac/an : 0
+        printf "%s\t%s\t%s\t%s\t%d\t%d\t%.6g\t%d\t%d\t%d\n", a[1], a[2], a[3], a[4], ac, an, af, h, H, car[k]+0
+      }
+    }
+  ' "$OUT_DIR/cohort.genotypes.tsv" > "$OUT_DIR/cohort.variant_summary.tsv"
+  log "  3.5a) summary rows: $(($(wc -l < "$OUT_DIR/cohort.variant_summary.tsv") - 1))"
+fi
+
+# 3.5b: join summary into filtered table
+if [[ -s "$OUT_DIR/cohort.filtered.with_cohort.tab" ]]; then
+  log "  3.5b) skipping (existing cohort.filtered.with_cohort.tab: $(du -h "$OUT_DIR/cohort.filtered.with_cohort.tab" | cut -f1))"
+else
+  log "  3.5b) joining cohort summary into filtered table..."
+  awk -F'\t' 'BEGIN { OFS="\t" }
+    NR == FNR {
+      if (FNR == 1) {
+        hdr = ""; for (i=5; i<=NF; i++) hdr = hdr "\t" $i
+        n_extra = NF - 4
+        next
+      }
+      key = $1 SUBSEP $2 SUBSEP $3 SUBSEP $4
+      rec = ""; for (i=5; i<=NF; i++) rec = rec "\t" $i
+      summary[key] = rec
+      next
+    }
+    FNR == 1 { print $0 hdr; next }
+    {
+      key = $1 SUBSEP $2 SUBSEP $3 SUBSEP $4
+      if (key in summary) print $0 summary[key]
+      else { pad = ""; for (i=1;i<=n_extra;i++) pad = pad "\t"; print $0 pad }
+    }
+  ' "$OUT_DIR/cohort.variant_summary.tsv" "$OUT_DIR/cohort.filtered.tab" \
+    > "$OUT_DIR/cohort.filtered.with_cohort.tab"
+fi
+
 # ============================== Stage 4: tier ===============================
 section "Stage 4: tiering"
+# Note: --genotypes is intentionally omitted here. The cohort columns are already
+# attached to cohort.filtered.with_cohort.tab by Stage 3.5; tier_variants.R skips
+# its own per_variant_cohort() step when --genotypes is unset, avoiding the OOM
+# that happens when R tries to fread the 30+ GB long genotype table.
 Rscript "$TIER_SCRIPT" \
-  --input         "$OUT_DIR/cohort.filtered.tab" \
-  --genotypes     "$OUT_DIR/cohort.genotypes.tsv" \
+  --input         "$OUT_DIR/cohort.filtered.with_cohort.tab" \
   --modifier-genes "$MODIFIER_GENES" \
   --af-max        "$AF_MAX" \
   --out-prefix    "$OUT_DIR/cohort"
+
+# ============================== Stage 5: per-gene burden ====================
+# tier_variants.R skips gene_sample_burden when --genotypes is omitted, so we
+# compute it externally here via awk: stream the long genotype table, look up
+# each carrier's variant in the tiered table, count distinct (gene, sample)
+# pairs per qualifying criterion. Join the result back into cohort.genes.tsv.
+section "Stage 5: per-gene sample burden"
+
+if [[ -s "$OUT_DIR/cohort.gene_burden.tsv" ]]; then
+  log "  5a) skipping (existing cohort.gene_burden.tsv)"
+else
+  log "  5a) computing per-gene sample burden..."
+  awk -F'\t' '
+    NR == FNR {
+      if (FNR == 1) { for (i=1;i<=NF;i++) c[$i] = i; next }
+      key = $c["chrom"] SUBSEP $c["pos"] SUBSEP $c["ref"] SUBSEP $c["alt"]
+      g[key]    = $c["gene"]
+      tier[key] = $c["tier"]+0
+      mod[key]  = $c["modifier_candidate"]
+      imp[key]  = $c["impact"]
+      vc[key]   = $c["variant_class"]
+      next
+    }
+    FNR == 1 { next }
+    $6 ~ /^(0\/1|1\/0|0\|1|1\|0|1\/1|1\|1)$/ {
+      key = $1 SUBSEP $2 SUBSEP $3 SUBSEP $4
+      if (!(key in g)) next
+      gene = g[key]; sample = $5; t = tier[key]
+      seen_any[gene, sample] = 1
+      if (imp[key] == "HIGH")                seen_hi [gene, sample] = 1
+      if (t == 1)                            seen_t1 [gene, sample] = 1
+      if (t == 1 || t == 2)                  seen_t12[gene, sample] = 1
+      if ((t == 1 || t == 2) || (vc[key] == "pLoF" && t > 0 && t <= 3))
+                                             seen_q  [gene, sample] = 1
+      if (mod[key] == "TRUE")                seen_m  [gene, sample] = 1
+    }
+    END {
+      print "gene\tn_samples_high_impact\tn_samples_tier1\tn_samples_tier12\tn_samples_qualifying\tn_samples_with_modifier_candidate"
+      for (k in seen_any) { split(k, a, SUBSEP); genes[a[1]] = 1 }
+      for (gn in genes) {
+        hi = t1 = t12 = q = m = 0
+        for (k in seen_any) {
+          split(k, a, SUBSEP)
+          if (a[1] != gn) continue
+          if ((gn, a[2]) in seen_hi)  hi++
+          if ((gn, a[2]) in seen_t1)  t1++
+          if ((gn, a[2]) in seen_t12) t12++
+          if ((gn, a[2]) in seen_q)   q++
+          if ((gn, a[2]) in seen_m)   m++
+        }
+        printf "%s\t%d\t%d\t%d\t%d\t%d\n", gn, hi, t1, t12, q, m
+      }
+    }
+  ' "$OUT_DIR/cohort.variants.tsv" "$OUT_DIR/cohort.genotypes.tsv" \
+    > "$OUT_DIR/cohort.gene_burden.tsv"
+fi
+
+# 5b: join burden columns into cohort.genes.tsv
+log "  5b) joining burden into cohort.genes.tsv..."
+awk -F'\t' 'BEGIN { OFS="\t" }
+  NR == FNR {
+    if (FNR == 1) {
+      hdr = ""; for (i=2; i<=NF; i++) hdr = hdr "\t" $i
+      n_extra = NF - 1
+      next
+    }
+    rec = ""; for (i=2; i<=NF; i++) rec = rec "\t" $i
+    burden[$1] = rec
+    next
+  }
+  FNR == 1 { print $0 hdr; next }
+  {
+    if ($1 in burden) print $0 burden[$1]
+    else { pad = ""; for (i=1;i<=n_extra;i++) pad = pad "\t"; print $0 pad }
+  }
+' "$OUT_DIR/cohort.gene_burden.tsv" "$OUT_DIR/cohort.genes.tsv" \
+  > "$OUT_DIR/cohort.genes.with_burden.tsv"
+
+mv "$OUT_DIR/cohort.genes.with_burden.tsv" "$OUT_DIR/cohort.genes.tsv"
+log "  5b) merged burden columns into cohort.genes.tsv"
 
 # ============================== Summary =====================================
 section "Summary"
