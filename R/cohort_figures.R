@@ -157,32 +157,50 @@ fig_variant_class_by_tier <- function(v, cohort_name, out_path) {
   message("[fig] wrote ", out_path)
 }
 
-fig_per_sample_burden <- function(v, gt, cohort_name, out_path) {
-  if (is.null(gt)) {
-    message("[fig] skipping per_sample_burden (no --genotypes provided)")
+fig_per_sample_burden <- function(v, gt_path, cohort_name, out_path) {
+  if (is.null(gt_path)) {
+    message("[fig] skipping per_sample_burden (no --genotypes path provided)")
     return(invisible())
   }
-  # Carriers of Tier 1 or Tier 2 variants per sample.
-  setnames(gt, tolower(names(gt)))
-  gt_carriers <- gt[gt %in% c("0/1","1/0","0|1","1|0","1/1","1|1"),
-                    .(chrom = as.character(chrom),
-                      pos   = as.integer(pos),
-                      ref   = as.character(ref),
-                      alt   = as.character(alt),
-                      sample)]
+
+  # Stream the genotype file via awk rather than fread()ing it -- at cohort scale
+  # the long-format genotype TSV is 30+ GB and OOM-kills R. Awk holds only:
+  #   - the Tier 1+2 variant key set (~thousands of keys, ~MB)
+  #   - per-sample carrier counts (a few hundred samples, tiny)
   v_t12 <- v[tier %in% c(1L, 2L),
              .(chrom = as.character(get("chrom")),
                pos   = as.integer(get("pos")),
                ref   = as.character(get("ref")),
-               alt   = as.character(get("alt")),
-               tier)]
-  m <- merge(gt_carriers, v_t12, by = c("chrom","pos","ref","alt"))
+               alt   = as.character(get("alt")))]
+  if (nrow(v_t12) == 0L) {
+    message("[fig] skipping per_sample_burden (no Tier 1+2 variants)")
+    return(invisible())
+  }
+  keys_tmp <- tempfile(fileext = ".tsv")
+  fwrite(v_t12, keys_tmp, sep = "\t", col.names = FALSE)
+  on.exit(unlink(keys_tmp), add = TRUE)
 
-  per_sample <- m[, .(n_t12 = .N), by = sample]
-  # include zero-carrier samples
-  all_samples <- unique(gt$sample)
-  per_sample <- merge(data.table(sample = all_samples), per_sample, by = "sample", all.x = TRUE)
-  per_sample[is.na(n_t12), n_t12 := 0L]
+  awk_cmd <- sprintf(
+    "awk -F'\\t' '
+       NR == FNR { v[$1 SUBSEP $2 SUBSEP $3 SUBSEP $4] = 1; next }
+       FNR == 1  { next }
+       $6 ~ /^(0\\/1|1\\/0|0\\|1|1\\|0|1\\/1|1\\|1)$/ {
+         key = $1 SUBSEP $2 SUBSEP $3 SUBSEP $4
+         if (key in v) cnt[$5]++
+         seen[$5] = 1
+       }
+       END {
+         for (s in seen) printf \"%%s\\t%%d\\n\", s, (s in cnt) ? cnt[s] : 0
+       }
+     ' %s %s",
+    shQuote(keys_tmp), shQuote(gt_path)
+  )
+  per_sample <- fread(cmd = awk_cmd, header = FALSE,
+                      col.names = c("sample", "n_t12"))
+  if (nrow(per_sample) == 0L) {
+    message("[fig] skipping per_sample_burden (no carriers found in genotype file)")
+    return(invisible())
+  }
 
   med <- median(per_sample$n_t12)
   q90 <- quantile(per_sample$n_t12, 0.9)
@@ -266,13 +284,13 @@ main <- function() {
 
   v <- fread(opt$variants, sep = "\t", na.strings = c("", ".", "NA"))
   g <- fread(opt$genes,    sep = "\t", na.strings = c("", ".", "NA"))
-  gt <- if (!is.null(opt$genotypes))
-          fread(opt$genotypes, sep = "\t", na.strings = c("", ".", "NA"))
-        else NULL
+  # Don't fread the genotype file -- it's 30+ GB at cohort scale and OOMs R.
+  # fig_per_sample_burden() streams it through awk via system() instead.
+  gt_path <- if (!is.null(opt$genotypes) && file.exists(opt$genotypes)) opt$genotypes else NULL
 
   fig_tier_distribution    (v, opt$cohort_name, file.path(opt$out_dir, "01_tier_distribution.png"))
   fig_variant_class_by_tier(v, opt$cohort_name, file.path(opt$out_dir, "02_variant_class_by_tier.png"))
-  fig_per_sample_burden    (v, gt, opt$cohort_name, file.path(opt$out_dir, "03_per_sample_burden.png"))
+  fig_per_sample_burden    (v, gt_path, opt$cohort_name, file.path(opt$out_dir, "03_per_sample_burden.png"))
   fig_modifier_landscape   (g, opt$cohort_name, file.path(opt$out_dir, "04_modifier_landscape.png"))
 
   message("[cohort_figures] done. wrote figures to: ", opt$out_dir)
