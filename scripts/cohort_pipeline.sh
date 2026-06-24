@@ -165,9 +165,136 @@ log "Manifest OK: $n_samples samples"
 missing=$(tail -n+2 "$MANIFEST" | awk -F'\t' '{ if (system("test -e " $2 ) != 0) print $1": "$2 }')
 [[ -n "$missing" ]] && { echo "ERROR: missing VCFs:" >&2; echo "$missing" >&2; exit 1; }
 
+# --- FASTA .fai index check -------------------------------------------------
+# Without .fai, fastvep loads the entire ~3 GB FASTA into RAM per worker
+# instead of memory-mapping, causing 30-90s startup hits and per-variant
+# slowdown. Auto-generate if samtools is available; otherwise fail fast with
+# the regen command so the user isn't surprised by silently-slow runs.
+if [[ ! -e "${FASTA}.fai" ]]; then
+  if command -v samtools >/dev/null 2>&1; then
+    log "FASTA .fai index missing; generating with samtools faidx (one-time, ~30s)..."
+    samtools faidx "$FASTA" \
+      || die "samtools faidx failed on $FASTA -- check file integrity"
+  else
+    die "FASTA .fai index missing at ${FASTA}.fai and samtools not on PATH.
+       Generate the index once with:    samtools faidx $FASTA
+       Without it, per-worker FASTA load adds 30-90s of overhead per sample
+       and total cohort runtime can multiply 5-10x. Install samtools via
+       'conda install -c bioconda samtools' and re-run."
+  fi
+fi
+
+# --- SA database contents check ---------------------------------------------
+# List which .osa/.osa.idx/.oga files are in --sa-dir, warn loudly if any of
+# the tiering-critical ones are missing. Tiering can still produce output
+# without these, but the result will be largely uninformative.
+log "Supplementary annotation databases in $SA_DIR:"
+sa_found=0
+for expected_base in dbnsfp clinvar gnomad_genes spliceai; do
+  matches=()
+  for ext in osa osa.idx oga; do
+    for f in "$SA_DIR/${expected_base}.${ext}" "$SA_DIR/${expected_base}.${ext}".idx; do
+      [[ -e "$f" ]] && matches+=("$f")
+    done
+  done
+  if [[ ${#matches[@]} -gt 0 ]]; then
+    primary="${matches[0]}"
+    log "  ✓ $expected_base → $(basename "$primary") ($(du -h "$primary" | cut -f1))"
+    sa_found=$((sa_found + 1))
+  else
+    case "$expected_base" in
+      dbnsfp|clinvar|gnomad_genes)
+        log "  ⚠ $expected_base NOT FOUND  -- tiering will lack signal for this source"
+        ;;
+      spliceai)
+        log "  ⓘ $expected_base not loaded   (acceptable; see docs/noncoding_v2_plan.md)"
+        ;;
+    esac
+  fi
+done
+[[ $sa_found -eq 0 ]] && die "no recognized SA databases found in $SA_DIR -- tiering would be uninformative; aborting"
+
+# --- Chromosome-naming check ------------------------------------------------
+# Compare the chromosome naming convention of the first VCF against the FASTA.
+# If they don't match, fastvep produces all-intergenic CSQ output silently and
+# the entire cohort run is wasted. Fail fast with a clear remediation message.
+first_vcf=$(tail -n+2 "$MANIFEST" | awk -F'\t' 'NR==1 {print $2; exit}')
+vcf_chrom=$(zcat -f "$first_vcf" 2>/dev/null | awk '!/^#/ {print $1; exit}')
+fasta_chrom=$(grep '^>' "$FASTA" 2>/dev/null | head -1 | sed 's/^>//' | awk '{print $1}')
+
+vcf_chr=$(echo "$vcf_chrom" | grep -c '^chr' || true)
+fasta_chr=$(echo "$fasta_chrom" | grep -c '^chr' || true)
+
+if [[ -z "$vcf_chrom" || -z "$fasta_chrom" ]]; then
+  log "  ⚠ couldn't determine chromosome naming (vcf='$vcf_chrom' fasta='$fasta_chrom'); proceeding"
+elif [[ "$vcf_chr" != "$fasta_chr" ]]; then
+  die "CHROMOSOME NAMING MISMATCH detected!
+       First VCF chrom:  '$vcf_chrom'  ($first_vcf)
+       FASTA chrom:      '$fasta_chrom'  ($FASTA)
+       fastvep will produce ALL-INTERGENIC annotation (no gene/transcript
+       match for any variant), wasting the entire cohort run silently.
+
+       Fix one or the other before re-running:
+       a) Rename VCFs to match FASTA convention (Ensembl-style, no chr prefix):
+            for vcf in /path/to/*.vcf.gz; do
+              bcftools annotate --rename-chrs /tmp/chr_to_ensembl.txt \\
+                -Oz -o renamed/\$(basename \$vcf) \$vcf
+            done
+       b) Rebuild the cache + use a chr-prefixed FASTA throughout.
+
+       See docs/pipeline_methods.md \xc2\xa72.1 for chromosome-naming requirements."
+else
+  log "  ✓ chromosome naming consistent (VCF='$vcf_chrom' FASTA='$fasta_chrom')"
+fi
+
 log "Threads: $THREADS"
 log "Pre-filter AF threshold: $FILTER_AF (gnomAD popmax)"
 log "Tiering rarity gate:     $AF_MAX"
+
+# --- Provenance log ---------------------------------------------------------
+# Records git commit, tool versions, reference data paths + mtimes, all flags
+# used. Written before Stage 1 starts so it survives any subsequent failure.
+PROVENANCE="$OUT_DIR/run.provenance.tsv"
+{
+  printf "key\tvalue\n"
+  printf "timestamp_utc\t%s\n"        "$(date -u +%FT%TZ)"
+  printf "hostname\t%s\n"             "$(hostname)"
+  printf "git_commit\t%s\n"           "$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+  printf "git_branch\t%s\n"           "$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+  printf "git_dirty\t%s\n"            "$(git -C "$REPO_DIR" diff --quiet 2>/dev/null && echo no || echo yes)"
+  printf "fastvep_version\t%s\n"      "$(fastvep --version 2>&1 | head -1)"
+  printf "bcftools_version\t%s\n"     "$(bcftools --version 2>&1 | head -1)"
+  printf "rscript_version\t%s\n"      "$(Rscript --version 2>&1 | head -1)"
+  printf "python_version\t%s\n"       "$($PYTHON_BIN --version 2>&1 | head -1)"
+  printf "samtools_version\t%s\n"     "$(samtools --version 2>&1 | head -1 || echo missing)"
+  printf "manifest\t%s\n"             "$MANIFEST"
+  printf "n_samples\t%s\n"            "$n_samples"
+  printf "out_dir\t%s\n"              "$OUT_DIR"
+  printf "data_dir\t%s\n"             "$DATA_DIR"
+  printf "fasta_path\t%s\n"           "$FASTA"
+  printf "fasta_mtime\t%s\n"          "$(stat -c %y "$FASTA" 2>/dev/null || stat -f '%Sm' "$FASTA" 2>/dev/null)"
+  printf "fasta_size\t%s\n"           "$(du -h "$FASTA" | cut -f1)"
+  printf "cache_path\t%s\n"           "${CACHE:-(unused)}"
+  printf "gff3_path\t%s\n"            "${GFF3:-(unused)}"
+  printf "sa_dir\t%s\n"               "$SA_DIR"
+  for osa in "$SA_DIR"/*.osa "$SA_DIR"/*.oga; do
+    [[ -e "$osa" ]] || continue
+    printf "sa_file:%s\t%s | mtime=%s\n" \
+      "$(basename "$osa")" \
+      "$(du -h "$osa" | cut -f1)" \
+      "$(stat -c %y "$osa" 2>/dev/null || stat -f '%Sm' "$osa" 2>/dev/null)"
+  done
+  printf "modifier_genes_file\t%s\n"  "$MODIFIER_GENES"
+  printf "modifier_genes_count\t%s\n" "$(grep -vc '^#\|^$' "$MODIFIER_GENES" 2>/dev/null || echo unknown)"
+  printf "filter_af\t%s\n"            "$FILTER_AF"
+  printf "af_max_tier_gate\t%s\n"     "$AF_MAX"
+  printf "include_sex_chroms\t%s\n"   "$INCLUDE_SEX_CHROMS"
+  printf "allow_missing_popmax\t%s\n" "$ALLOW_MISSING_POPMAX"
+  printf "threads\t%s\n"              "$THREADS"
+  printf "skip_annotate\t%s\n"        "$SKIP_ANNOTATE"
+  printf "skip_merge\t%s\n"           "$SKIP_MERGE"
+} > "$PROVENANCE"
+log "Wrote provenance log: $PROVENANCE"
 
 # ============================== Stage 1: per-sample =========================
 if [[ "$SKIP_ANNOTATE" == "0" ]]; then
