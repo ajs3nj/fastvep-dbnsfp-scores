@@ -163,17 +163,24 @@ else
   echo "$viol" | sed 's/^/        /'
 fi
 
-# 4c. Every Tier 5 should be common, ClinVar B/LB, or AM-benign missense
+# 4c. Every Tier 5 should be common, ClinVar B/LB, or AM-benign missense.
+# Use af_used (R's effective rarity column, falls back through faf -> popmax -> gnomad_af)
+# rather than popmax alone, and accept am_class containing "benign" in addition
+# to numeric AM < 0.34 (mirrors the R rule `am_benign := T0(am < 0.34) | grepl("benign", amc)`).
 viol=$(awk -F'\t' '
   NR == 1 { for (i=1;i<=NF;i++) c[$i] = i; next }
   $c["tier"] == 5 {
-    pmax = $c["gnomad_popmax_af"]; cv = tolower($c["clin_sig"])
-    am = $c["alphamissense"]; vc = $c["variant_class"]
-    is_common = (pmax != "" && pmax != "." && pmax+0 > 1e-4)
+    # Prefer the af_used column R writes; fall back to popmax if af_used absent.
+    if (("af_used" in c) && $c["af_used"] != "" && $c["af_used"] != ".") af_used = $c["af_used"]
+    else af_used = $c["gnomad_popmax_af"]
+    cv = tolower($c["clin_sig"])
+    am = $c["alphamissense"]; amc = tolower($c["am_class"])
+    vc = $c["variant_class"]
+    is_common = (af_used != "" && af_used != "." && af_used+0 > 1e-4)
     has_clinvar_blb = (cv ~ /benign/ && cv !~ /pathogenic/)
-    am_benign = (am != "" && am != "." && am+0 < 0.34)
+    am_benign = (am != "" && am != "." && am+0 < 0.34) || (amc ~ /benign/)
     if (is_common || has_clinvar_blb || (vc == "missense" && am_benign)) next
-    print $c["chrom"]":"$c["pos"]" "$c["gene"]" vc="vc" pmax="pmax" cs="$c["clin_sig"]
+    print $c["chrom"]":"$c["pos"]" "$c["gene"]" vc="vc" af_used="af_used" am="am" amc="amc" cs="$c["clin_sig"]
   }
 ' "$VARIANTS" | head -5)
 if [[ -z "$viol" ]]; then
