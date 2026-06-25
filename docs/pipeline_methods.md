@@ -256,7 +256,7 @@ physically don't apply to them.
 
 | Class | Tier 1 | Tier 2 | Tier 3 | Tier 4 | Tier 5 |
 |---|---|---|---|---|---|
-| **pLoF** (stop_gained, frameshift, splice_acceptor, splice_donor, start_lost, transcript_ablation) | rare + constrained gene (LOEUF<0.35 or pLI≥0.9), not NMD-escape, LOFTEE HC if present | rare LoF in unconstrained gene; or NMD-escape; or LOFTEE LC | — | — | common, or ClinVar B/LB |
+| **pLoF** (stop_gained, frameshift, splice_acceptor, splice_donor, start_lost, transcript_ablation) | rare + constrained gene (LOEUF<0.35 or pLI≥0.9) + not NMD-escape (heuristic from EXON i/N field) | rare LoF in unconstrained gene; or NMD-escape | — | — | common, or ClinVar B/LB |
 | **non-canonical splice** | rare + SpliceAI ≥ 0.8 | rare + SpliceAI 0.5–0.8 | rare + SpliceAI 0.2–0.5 | rare, no SpliceAI signal | common |
 | **missense / protein_altering** | ClinVar P/LP ≥1 star; or rare + AlphaMissense ≥ 0.85 in constrained gene | rare + AlphaMissense likely_pathogenic (>0.564) | rare + AlphaMissense ambiguous (0.34–0.564); or rare missense in constrained gene with AM missing | rare, AM neutral or missing | AM likely_benign (<0.34), or common, or ClinVar B/LB |
 | **in-frame indel** | — | rare + LOEUF<0.35; or SpliceAI ≥0.5 | rare in moderately constrained gene; or SpliceAI 0.2–0.5 | rare, no constraint | common |
@@ -471,14 +471,35 @@ rebuild the `.osa` cleanly (the current size suggests a build error) AND/OR
 run SpliceAI as a post-tier pass against the much smaller tiered variant
 set. Both paths described in `docs/noncoding_v2_plan.md`.
 
-### 7.3 Pre-filter coupling to tiering
+### 7.3 LOFTEE is not currently integrated
+
+fastvep's default CSQ does not emit a LOFTEE LOF column, so the pipeline does
+not have access to LOFTEE's HC/LC classification of pLoF variants. The
+pipeline's pLoF Tier 1 rule relies on **consequence + gene constraint + an
+NMD-escape heuristic** (parsed from the VEP EXON `i/N` field — flags variants
+in the last exon). This catches most NMD-escape stop_gained variants but
+misses some LOFTEE-LC cases that the curated LOFTEE plugin would flag:
+
+- Stop variants in the last 50 bp of the penultimate exon (NMD-escape but
+  not in the last exon proper).
+- Canonical splice variants at canonical sites with weak surrounding splice
+  consensus (LOFTEE's u12-spliceosome / branch-point check).
+- Single-exon transcripts where no splice rescue is possible.
+
+Practical impact: an estimated 5–15% of current Tier 1 pLoF calls might be
+demoted to Tier 2 by LOFTEE's stricter quality filter. Proper LOFTEE
+integration is on the v2 backlog (see docs/noncoding_v2_plan.md). Until then,
+expect a small over-call rate on the pLoF Tier 1 set; cross-check candidates
+of clinical interest in IGV / Ensembl VEP+LOFTEE before final interpretation.
+
+### 7.4 Pre-filter coupling to tiering
 
 Any new tiering criterion must also become a pre-filter keep-rule, or
 variants with the new signal silently get dropped before tiering can see
 them. The pre-filter and tiering rules grow together — see the checklist
 in `docs/noncoding_v2_plan.md §7`.
 
-### 7.4 AF filter trade-offs
+### 7.5 AF filter trade-offs
 
 - `--filter-af 1e-4` (very strict) drops the entire modifier band
   (`1e-4 < popmax ≤ 5e-2`) and produces tier output that omits common-band
@@ -489,7 +510,7 @@ in `docs/noncoding_v2_plan.md §7`.
 
 The default 0.01 is the right setting for routine cohort runs.
 
-### 7.5 Single-cohort tiering, not joint-called
+### 7.6 Single-cohort tiering, not joint-called
 
 The pipeline operates on per-sample VCFs as given. If the VCFs are from
 single-sample calling (e.g., GATK HaplotypeCaller on each sample
@@ -499,7 +520,7 @@ they weren't called. This affects `cohort_an` and per-variant AF
 calculations slightly. For more rigorous cohort genotypes, joint-call the
 cohort upstream and re-derive per-sample VCFs from the joint VCF.
 
-### 7.6 Sample-level QC not included
+### 7.7 Sample-level QC not included
 
 The pipeline assumes per-sample VCFs are quality-controlled upstream
 (GQ/DP filtering, sample-level PCA, contamination checks, etc.). Outlier
@@ -507,7 +528,7 @@ samples carrying unusually many Tier 1+2 variants may indicate QC issues
 rather than biological signal — review the per-sample burden figure
 (`03_per_sample_burden.png`) for outliers.
 
-### 7.7 Reliance on gnomAD popmax annotation
+### 7.8 Reliance on gnomAD popmax annotation
 
 Variants not in gnomAD have no popmax attached, and under the default
 strict pre-filter they fail rarity gating unless they have HIGH/MOD/splice/

@@ -283,12 +283,19 @@ assign_tier_research <- function(v) {
   variant_class  <- v$variant_class
 
   # ---- pLoF ----
+  # NOTE: fastvep does not emit a LOFTEE LOF column in standard CSQ output, so
+  # `loftee_present`/`loftee_hc`/`loftee_lc` are effectively always FALSE here
+  # and don't influence the rule. We rely on the NMD-escape heuristic (parsed
+  # from EXON i/N) for quality filtering. Proper LOFTEE integration is on the
+  # v2 backlog (see docs/noncoding_v2_plan.md). If you build a fastvep variant
+  # that emits LOFTEE LOF in CSQ, this rule will pick it up automatically via
+  # the hc_or_unknown / loftee_lc references below.
   is_lof <- variant_class == "pLoF"
-  hc_or_unknown <- !loftee_present | loftee_hc
+  hc_or_unknown <- !loftee_present | loftee_hc   # currently always TRUE (LOFTEE absent)
   v[is_lof & rare & constrained & !nmd_escape & hc_or_unknown,
-    `:=`(tier = 1L, tier_reason = "pLoF in constrained gene; not NMD-escape (LOFTEE HC if present)")]
+    `:=`(tier = 1L, tier_reason = "pLoF in constrained gene; not NMD-escape")]
   v[is_lof & rare & (!constrained | nmd_escape | loftee_lc),
-    `:=`(tier = 2L, tier_reason = "pLoF in non-constrained gene / NMD-escape / LOFTEE LC")]
+    `:=`(tier = 2L, tier_reason = "pLoF in non-constrained gene / NMD-escape")]
 
   # ---- non-canonical splice ----
   is_sp <- variant_class == "splice_noncanonical"

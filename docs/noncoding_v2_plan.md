@@ -279,18 +279,71 @@ The modifier flag for non-coding gains parallel paths:
 - modifier_candidate = TRUE if non-coding + AF in modifier band + (any of: SpliceAI
   0.2–0.5, conservation, regulatory element, in anchor/pathway gene).
 
+## 4.5 Tier D — LOFTEE integration (pLoF quality filter)
+
+**Why it matters.** fastvep's standard CSQ doesn't include LOFTEE LOF, so the
+pLoF Tier 1 rule currently has no quality filter beyond consequence + gene
+constraint + an NMD-escape heuristic. LOFTEE adds two things our heuristic
+misses:
+
+- **NMD-escape variants in the last 50bp of the penultimate exon** — proper
+  LOFTEE check; our `parse_last_exon` heuristic only flags last-exon variants.
+- **Canonical splice variants at weak splice contexts** — variants at
+  canonical donors/acceptors where surrounding sequence doesn't match strong
+  consensus, suggesting the site is alternative or weak (LOFTEE marks these LC).
+- **Single-exon transcript pLoFs** — no splice rescue possible (LOFTEE LC).
+
+Practical impact: ~5–15% of Tier 1 pLoF calls likely should be Tier 2 by
+LOFTEE-LC criteria. For NF research priority, this means a small over-call
+rate on the highest-confidence bucket — manageable for cohort scanning, but
+worth knowing for any candidate going to clinical confirmation.
+
+**Concrete steps.**
+
+```bash
+# Option 1: post-tier pass with Ensembl VEP + LOFTEE plugin on the tiered
+# variant set (~5M variants, runs in tens of minutes single-threaded).
+tail -n+2 cohort.variants.tsv | awk -F'\t' '
+  NR==1 { for(i=1;i<=NF;i++)c[$i]=i; print "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"; next }
+  { print $c["chrom"]"\t"$c["pos"]"\t.\t"$c["ref"]"\t"$c["alt"]"\t.\t.\t." }
+' > tiered.vcf
+
+vep --input_file tiered.vcf --output_file tiered.loftee.vcf \
+    --species homo_sapiens --assembly GRCh38 --cache \
+    --plugin LoF,loftee_path:$LOFTEE_PATH,human_ancestor_fa:$HUMAN_ANCESTOR
+
+# Parse LOFTEE LOF + LoF_filter fields from VEP output, join into
+# cohort.variants.tsv as `loftee_lof` and `loftee_filter` columns.
+# Then re-run tier_variants.R; the existing rule already references
+# `loftee_present` / `loftee_hc` / `loftee_lc` and will automatically pick
+# up the values once present.
+```
+
+**R tiering changes**: none. The existing rule already references LOFTEE
+columns; it just becomes effective once they're populated.
+
+**Expected impact**: 5–15% of Tier 1 pLoF demoted to Tier 2 (more honest
+high-confidence bucket); 1–2% of canonical-splice Tier 1 calls demoted to
+Tier 2 due to weak-splice-context. Tier 2 grows correspondingly.
+
+---
+
 ## 5. Implementation order
 
 1. **Tier A (SpliceAI rebuild)** — single biggest improvement; days of effort.
    Add a post-tier SpliceAI join step now while the rebuild is pending.
-2. **Tier B (PhyloP + GERP)** — broad gain across all non-coding; downloads + builds + R
-   tiering rule additions; days of effort.
-3. **Tier C (ENCODE + Roadmap regulatory)** — biggest interpretability gain for
-   pathway/disease-specific work; bigger lift because custom BED integration needs
-   fastvep `--custom` testing.
+2. **Tier D (LOFTEE)** — small-but-meaningful precision gain on pLoF Tier 1;
+   post-tier VEP+LOFTEE pass on the tiered variant set; ~1 day of effort
+   including the VEP plugin install.
+3. **Tier B (PhyloP + GERP)** — broad gain across all non-coding; downloads +
+   builds + R tiering rule additions; days of effort.
+4. **Tier C (ENCODE + Roadmap regulatory)** — biggest interpretability gain for
+   pathway/disease-specific work; bigger lift because custom BED integration
+   needs fastvep `--custom` testing.
 
 Each tier is independently shippable. Order is by ROI / effort ratio, not strict
-dependency.
+dependency. Tier D is short and disconnected from the others — could be done in
+parallel with Tier A or B.
 
 ## 6. Interim noncoding reporting (already in place)
 
