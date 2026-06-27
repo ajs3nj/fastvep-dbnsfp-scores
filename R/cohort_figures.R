@@ -11,10 +11,15 @@
 #   --cohort-name label for figure titles (default: "cohort")
 #
 # Outputs (PNG, 300 dpi, 10x6 in unless noted):
-#   01_tier_distribution.png       Cohort-wide variants by tier (1-5)
-#   02_variant_class_by_tier.png   Stacked bar: variant_class composition per tier
-#   03_per_sample_burden.png       Histogram of Tier 1+2 variants per sample
-#   04_modifier_landscape.png      Top 20 genes by n_modifier_candidates
+#   01_tier_distribution.png        Cohort-wide variants by tier (1-5)
+#   02_variant_class_by_tier.png    Stacked bar: variant_class composition per tier
+#   03_per_sample_burden.png        Histogram of Tier 1+2 variants per sample
+#   04_modifier_landscape.png       Top 20 genes by n_modifier_candidates
+#   05_nf_anchor_landscape.png      NF1/NF2/SMARCB1/LZTR1 variants by tier (positive control)
+#   06_variant_recurrence.png       n_carriers distribution -- private vs recurrent
+#   07_top_recurrent_t12.png        Top 30 most-recurrent Tier 1+2 variants in cohort
+#   08_sample_gene_hotspots.png     (sample, gene) pairs with >=2 rare Tier 1-3 variants
+#                                   (compound-het / multi-hit candidates)
 #
 # Dependencies: data.table, ggplot2, scales. (All available via conda-forge.)
 # -----------------------------------------------------------------------------
@@ -276,6 +281,292 @@ fig_modifier_landscape <- function(g, cohort_name, out_path, top_n = 20,
   message("[fig] wrote ", out_path)
 }
 
+# ----------------------------------------------------------------------------
+# Figure 05 -- NF-spectrum tumor suppressor variant landscape (positive control)
+#
+# A 209-sample NF1 cohort should have substantial Tier 1-2 signal in the four
+# anchor genes (NF1, NF2, SMARCB1, LZTR1). If this figure is empty or
+# Tier-1-poor for any anchor, something is wrong upstream (constraint columns
+# missing, ClinVar parsing broken, NF anchor override not firing, etc.).
+# Treats the figure as a confidence check for the whole pipeline.
+# ----------------------------------------------------------------------------
+fig_nf_anchor_landscape <- function(v, cohort_name, out_path) {
+  NF_ANCHORS <- c("NF1", "NF2", "SMARCB1", "LZTR1")
+  d <- v[gene %in% NF_ANCHORS & !is.na(tier),
+         .N, by = .(gene, tier)]
+  if (nrow(d) == 0L) {
+    message("[fig] skipping nf_anchor_landscape (no anchor-gene variants)")
+    return(invisible())
+  }
+  d[, gene := factor(gene, levels = NF_ANCHORS)]
+  d[, tier := factor(tier, levels = c(1L, 2L, 3L, 4L, 5L))]
+
+  totals <- v[gene %in% NF_ANCHORS, .(total = .N), by = .(gene)]
+  totals[, gene := factor(gene, levels = NF_ANCHORS)]
+  t12 <- v[gene %in% NF_ANCHORS & tier %in% c(1L, 2L),
+           .(t12_count = .N), by = .(gene)]
+  t12[, gene := factor(gene, levels = NF_ANCHORS)]
+
+  p <- ggplot(d, aes(y = gene, x = N, fill = tier)) +
+    geom_col(position = position_stack(reverse = TRUE)) +
+    geom_text(data = totals, aes(y = gene, x = total, label = paste0("n=", total)),
+              inherit.aes = FALSE, hjust = -0.15, size = 4.2, fontface = "bold",
+              color = "grey20") +
+    scale_fill_manual(values = TIER_COLORS, labels = TIER_LABELS,
+                      drop = FALSE, name = "Tier") +
+    scale_x_continuous(expand = expansion(mult = c(0, 0.15)), labels = comma) +
+    scale_y_discrete(limits = rev(NF_ANCHORS)) +
+    labs(
+      title    = "Positive control: NF-spectrum tumor suppressor variant landscape",
+      subtitle = sprintf("%s -- variants by tier in the four NF anchor genes (NF1, NF2, SMARCB1, LZTR1)",
+                         cohort_name),
+      x = "Number of distinct variants in cohort",
+      y = NULL,
+      caption = paste(
+        sprintf("Tier 1+2 totals -- %s",
+                paste(sprintf("%s: %d", t12$gene, t12$t12_count), collapse = "  |  ")),
+        "Tier 1 hits in these genes are immediate candidates for re-contact / phenotype review.",
+        "If any anchor is Tier-1-empty, double-check that constraint columns and the NF",
+        "anchor override (see tier_variants.R) are populated for this run.",
+        sep = "\n"
+      )
+    ) +
+    THEME_PRES
+
+  ggsave(out_path, p, width = 11, height = 6.5, dpi = 300, bg = "white")
+  message("[fig] wrote ", out_path)
+}
+
+# ----------------------------------------------------------------------------
+# Figure 06 -- Variant recurrence across samples
+#
+# Most rare variants in a small cohort are private (carriers = 1). Recurrent
+# variants are either (a) real founder/recurrent mutations, (b) sequencing
+# artifacts in low-complexity regions, or (c) common-but-mis-annotated
+# variants slipping through the AF filter. This figure shows the recurrence
+# distribution split by tier so collaborators can see what fraction of
+# Tier 1-2 variants are recurrent (worth manual review) vs private.
+# ----------------------------------------------------------------------------
+fig_variant_recurrence <- function(v, cohort_name, out_path) {
+  if (!"n_carriers" %in% names(v)) {
+    message("[fig] skipping variant_recurrence (no n_carriers column)")
+    return(invisible())
+  }
+  d <- v[!is.na(n_carriers) & n_carriers > 0]
+  d[, tier_cat := fifelse(tier %in% c(1L, 2L), "Tier 1-2 (high priority)",
+                  fifelse(tier %in% c(3L, 4L), "Tier 3-4 (uncertain)",
+                                                "Tier 5 (likely benign)"))]
+  d[, tier_cat := factor(tier_cat, levels = c("Tier 1-2 (high priority)",
+                                              "Tier 3-4 (uncertain)",
+                                              "Tier 5 (likely benign)"))]
+  agg <- d[, .(n_variants = .N), by = .(n_carriers, tier_cat)]
+
+  # Stats for caption
+  t12_private <- d[tier_cat == "Tier 1-2 (high priority)" & n_carriers == 1, .N]
+  t12_total   <- d[tier_cat == "Tier 1-2 (high priority)", .N]
+  t12_recur   <- t12_total - t12_private
+  max_carrier <- max(d$n_carriers)
+
+  cat_colors <- c("Tier 1-2 (high priority)" = "#c0392b",
+                  "Tier 3-4 (uncertain)"     = "#f1c40f",
+                  "Tier 5 (likely benign)"   = "#27ae60")
+
+  p <- ggplot(agg, aes(x = n_carriers, y = n_variants, color = tier_cat)) +
+    geom_step(linewidth = 1.1, direction = "mid") +
+    geom_point(size = 1.6, alpha = 0.8) +
+    scale_x_log10(labels = comma, breaks = c(1, 2, 5, 10, 20, 50, 100, 200)) +
+    scale_y_log10(labels = comma) +
+    scale_color_manual(values = cat_colors, name = "Tier category") +
+    labs(
+      title    = "Variant recurrence across the cohort",
+      subtitle = sprintf("%s -- distribution of variants by number of carrier samples",
+                         cohort_name),
+      x = "Number of carrier samples (log)",
+      y = "Number of variants (log)",
+      caption = sprintf(paste(
+        "Tier 1-2: %s of %s variants are private (carriers = 1); %s are recurrent.",
+        "Recurrent high-confidence variants warrant inspection for founder effects",
+        "vs sequencing artifacts (low-complexity regions, mappability gaps).",
+        "Max carrier count in cohort: %d samples.",
+        sep = "\n"),
+        comma(t12_private), comma(t12_total), comma(t12_recur), max_carrier
+      )
+    ) +
+    THEME_PRES +
+    theme(legend.position = "top")
+
+  ggsave(out_path, p, width = 11, height = 6.5, dpi = 300, bg = "white")
+  message("[fig] wrote ", out_path)
+}
+
+# ----------------------------------------------------------------------------
+# Figure 07 -- Top recurrent Tier 1+2 variants
+#
+# Companion to Fig 06: the actual list of which recurrent Tier 1-2 variants
+# are most carriers-rich. Use this to spot:
+#   - Founder mutations (one variant, many carriers, biologically plausible gene)
+#   - QC artifacts (variants in well-known mappability-poor genes; common
+#     ClinVar entries that escaped the AF filter)
+#   - Population-stratified variants (ancestry-specific common alleles
+#     mis-annotated as rare due to missing-popmax)
+# ----------------------------------------------------------------------------
+fig_top_recurrent_variants <- function(v, cohort_name, out_path, top_n = 30) {
+  if (!"n_carriers" %in% names(v)) {
+    message("[fig] skipping top_recurrent_variants (no n_carriers column)")
+    return(invisible())
+  }
+  d <- v[tier %in% c(1L, 2L) & !is.na(n_carriers) & n_carriers >= 2]
+  if (nrow(d) == 0L) {
+    message("[fig] skipping top_recurrent_variants (no recurrent Tier 1-2 variants)")
+    return(invisible())
+  }
+  setorder(d, -n_carriers, gene)
+  d <- head(d, top_n)
+  d[, label := sprintf("%-8s  %s:%s  %s>%s",
+                       ifelse(is.na(gene) | gene == "", ".", gene),
+                       chrom, pos, ref, alt)]
+  d[, label := factor(label, levels = rev(unique(label)))]
+  d[, tier := factor(tier, levels = c(1L, 2L, 3L, 4L, 5L))]
+
+  p <- ggplot(d, aes(x = n_carriers, y = label, fill = tier)) +
+    geom_col() +
+    geom_text(aes(label = paste0("n=", n_carriers)),
+              hjust = -0.15, size = 3.6, color = "grey20") +
+    scale_fill_manual(values = TIER_COLORS, labels = TIER_LABELS,
+                      drop = FALSE, name = "Tier") +
+    scale_x_continuous(expand = expansion(mult = c(0, 0.18)), labels = comma) +
+    labs(
+      title    = sprintf("Top %d recurrent Tier 1-2 variants in cohort", nrow(d)),
+      subtitle = sprintf("%s -- candidates for founder effects, recurrent hits, or QC review",
+                         cohort_name),
+      x = "Number of carrier samples",
+      y = NULL,
+      caption = paste(
+        "Variants present in two or more samples at Tier 1 or Tier 2 priority.",
+        "Inspect top hits for: real founder mutations (concentrated by ancestry?),",
+        "QC artifacts (low-complexity / repetitive regions, mappability gaps),",
+        "or ancestry-private common alleles that slipped the gnomAD popmax filter.",
+        sep = "\n"
+      )
+    ) +
+    THEME_PRES +
+    theme(axis.text.y = element_text(size = 10, family = "mono"))
+
+  ggsave(out_path, p, width = 12, height = 0.32 * nrow(d) + 2.5, dpi = 300, bg = "white")
+  message("[fig] wrote ", out_path)
+}
+
+# ----------------------------------------------------------------------------
+# Figure 08 -- Per-sample, per-gene hotspots (compound-het / multi-hit)
+#
+# For each (sample, gene) pair, count how many distinct rare Tier 1-3 variants
+# the sample carries in that gene. Pairs with >=2 distinct variants are
+# candidates for:
+#   - Compound heterozygous recessive effects (if both variants het)
+#   - Multi-hit somatic events (e.g. two-hit tumor suppressor inactivation)
+#   - Phase artifacts (same haplotype, double-counted)
+# Phasing requires trio data or long-read sequencing for confirmation, but
+# these pairs are the right manual-review starting point.
+#
+# Streams the 30+ GB genotype table via awk; never reads it into R.
+# ----------------------------------------------------------------------------
+fig_sample_gene_hotspots <- function(v, gt_path, cohort_name, out_path, top_n = 30) {
+  if (is.null(gt_path)) {
+    message("[fig] skipping sample_gene_hotspots (no --genotypes path provided)")
+    return(invisible())
+  }
+
+  # Lookup table: variant_key -> gene (Tier 1-3 only, gene-annotated)
+  vt <- v[!is.na(gene) & gene != "" & tier %in% c(1L, 2L, 3L),
+          .(chrom = as.character(chrom),
+            pos   = as.integer(pos),
+            ref   = as.character(ref),
+            alt   = as.character(alt),
+            gene  = as.character(gene))]
+  if (nrow(vt) == 0L) {
+    message("[fig] skipping sample_gene_hotspots (no gene-annotated Tier 1-3 variants)")
+    return(invisible())
+  }
+  keys_tmp <- tempfile(fileext = ".tsv")
+  fwrite(vt, keys_tmp, sep = "\t", col.names = FALSE)
+  on.exit(unlink(keys_tmp), add = TRUE)
+
+  # Stream genotypes: $1=chrom, $2=pos, $3=ref, $4=alt, $5=sample, $6=gt
+  # For each carrier (het or hom_alt) line where variant is in our Tier 1-3 set,
+  # increment count for (sample, gene). Emit (sample, gene, count).
+  awk_cmd <- sprintf(
+    "awk -F'\\t' '
+       NR == FNR { vg[$1 SUBSEP $2 SUBSEP $3 SUBSEP $4] = $5; next }
+       FNR == 1  { next }
+       $6 ~ /^(0\\/1|1\\/0|0\\|1|1\\|0|1\\/1|1\\|1)$/ {
+         k = $1 SUBSEP $2 SUBSEP $3 SUBSEP $4
+         if (k in vg) cnt[$5 SUBSEP vg[k]]++
+       }
+       END {
+         for (k in cnt) {
+           split(k, a, SUBSEP)
+           if (cnt[k] >= 2) printf \"%%s\\t%%s\\t%%d\\n\", a[1], a[2], cnt[k]
+         }
+       }
+     ' %s %s",
+    shQuote(keys_tmp), shQuote(gt_path)
+  )
+
+  message("[fig] streaming genotypes for sample-gene hotspots...")
+  pairs <- tryCatch(
+    fread(cmd = awk_cmd, header = FALSE,
+          col.names = c("sample", "gene", "n_variants")),
+    error = function(e) { message("[fig] hotspot awk failed: ", conditionMessage(e)); NULL }
+  )
+  if (is.null(pairs) || nrow(pairs) == 0L) {
+    message("[fig] skipping sample_gene_hotspots (no (sample, gene) pair has >=2 rare Tier 1-3 variants)")
+    return(invisible())
+  }
+  setorder(pairs, -n_variants, gene, sample)
+  full_n   <- nrow(pairs)                       # capture BEFORE cropping for caption
+  full_max <- max(pairs$n_variants)
+  pairs <- head(pairs, top_n)
+  pairs[, label := sprintf("%-12s  carrier:  %s", gene, sample)]
+  pairs[, label := factor(label, levels = rev(unique(label)))]
+
+  # Color by anchor-gene membership to make NF anchors pop visually
+  NF_ANCHORS <- c("NF1", "NF2", "SMARCB1", "LZTR1")
+  pairs[, anchor := ifelse(gene %in% NF_ANCHORS, "NF anchor gene", "Other")]
+  pairs[, anchor := factor(anchor, levels = c("NF anchor gene", "Other"))]
+  anchor_colors <- c("NF anchor gene" = "#c0392b", "Other" = "#8e44ad")
+
+  p <- ggplot(pairs, aes(x = n_variants, y = label, fill = anchor)) +
+    geom_col() +
+    geom_text(aes(label = paste0(n_variants, " variants")),
+              hjust = -0.12, size = 3.6, color = "grey20") +
+    scale_fill_manual(values = anchor_colors, name = NULL) +
+    scale_x_continuous(expand = expansion(mult = c(0, 0.22)),
+                       breaks = pretty_breaks(n = 6)) +
+    labs(
+      title    = sprintf("Top %d of %s sample-gene hotspots (>=2 rare Tier 1-3 variants)",
+                         nrow(pairs), comma(full_n)),
+      subtitle = sprintf("%s -- compound-heterozygous / multi-hit candidates  (max in cohort: %d variants)",
+                         cohort_name, full_max),
+      x = "Distinct rare Tier 1-3 variants in same gene, same sample",
+      y = NULL,
+      caption = paste(
+        "Each row: one sample carrying multiple distinct rare predicted-damaging",
+        "variants in the same gene. Candidates for compound-heterozygous recessive",
+        "effects (if both het) or multi-hit somatic two-hit events. Phase by trio",
+        "genotypes or long-read sequencing before clinical interpretation.",
+        "NF anchor-gene hotspots highlighted in red.",
+        sep = "\n"
+      )
+    ) +
+    THEME_PRES +
+    theme(axis.text.y = element_text(size = 10, family = "mono"),
+          legend.position = "top")
+
+  ggsave(out_path, p, width = 13, height = 0.34 * nrow(pairs) + 2.8,
+         dpi = 300, bg = "white")
+  message("[fig] wrote ", out_path)
+}
+
 # ------------------------------- main ----------------------------------------
 main <- function() {
   opt <- parse_args(commandArgs(trailingOnly = TRUE))
@@ -288,10 +579,14 @@ main <- function() {
   # fig_per_sample_burden() streams it through awk via system() instead.
   gt_path <- if (!is.null(opt$genotypes) && file.exists(opt$genotypes)) opt$genotypes else NULL
 
-  fig_tier_distribution    (v, opt$cohort_name, file.path(opt$out_dir, "01_tier_distribution.png"))
-  fig_variant_class_by_tier(v, opt$cohort_name, file.path(opt$out_dir, "02_variant_class_by_tier.png"))
-  fig_per_sample_burden    (v, gt_path, opt$cohort_name, file.path(opt$out_dir, "03_per_sample_burden.png"))
-  fig_modifier_landscape   (g, opt$cohort_name, file.path(opt$out_dir, "04_modifier_landscape.png"))
+  fig_tier_distribution     (v, opt$cohort_name, file.path(opt$out_dir, "01_tier_distribution.png"))
+  fig_variant_class_by_tier (v, opt$cohort_name, file.path(opt$out_dir, "02_variant_class_by_tier.png"))
+  fig_per_sample_burden     (v, gt_path, opt$cohort_name, file.path(opt$out_dir, "03_per_sample_burden.png"))
+  fig_modifier_landscape    (g, opt$cohort_name, file.path(opt$out_dir, "04_modifier_landscape.png"))
+  fig_nf_anchor_landscape   (v, opt$cohort_name, file.path(opt$out_dir, "05_nf_anchor_landscape.png"))
+  fig_variant_recurrence    (v, opt$cohort_name, file.path(opt$out_dir, "06_variant_recurrence.png"))
+  fig_top_recurrent_variants(v, opt$cohort_name, file.path(opt$out_dir, "07_top_recurrent_t12.png"))
+  fig_sample_gene_hotspots  (v, gt_path, opt$cohort_name, file.path(opt$out_dir, "08_sample_gene_hotspots.png"))
 
   message("[cohort_figures] done. wrote figures to: ", opt$out_dir)
 }
