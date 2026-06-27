@@ -139,8 +139,10 @@ def main():
     args = ap.parse_args()
 
     csq_fields = []
-    # info_id -> [field names] (ALLELE stripped)
+    # info_id -> [field names] (with leading key stripped)
     fv_fields = {}
+    # info_id -> "allele" or "symbol" -- tells the row-loop how to key the lookup
+    fv_key_type = {}
 
     n_rows = 0
     # Write gzip if the output path ends in .gz or .bgz (saves ~80% disk).
@@ -162,11 +164,23 @@ def main():
                     info_id = head.split("=")[-1]
                     fmt = parse_format_field(line)
                     if fmt:
-                        # First entry is ALLELE for per-allele projections; skip it.
-                        if fmt[0].upper() == "ALLELE":
+                        # fastvep projections come in two flavors:
+                        #   (a) per-allele: first field is ALLELE (e.g. FV_DBNSFP, FV_CLINVAR,
+                        #       FV_GNOMAD, SpliceAI). Look up by the CSQ Allele.
+                        #   (b) per-gene:   first field is SYMBOL (e.g. FV_GNOMAD_GENE, FV_OMIM,
+                        #       FV_CLINVAR_PROTEIN). Look up by the CSQ SYMBOL.
+                        # Strip the leading key from the field list either way so `fnames`
+                        # describes just the value fields.
+                        first = fmt[0].upper()
+                        if first == "ALLELE":
                             fv_fields[info_id] = fmt[1:]
+                            fv_key_type[info_id] = "allele"
+                        elif first == "SYMBOL":
+                            fv_fields[info_id] = fmt[1:]
+                            fv_key_type[info_id] = "symbol"
                         else:
                             fv_fields[info_id] = fmt
+                            fv_key_type[info_id] = "unknown"
                 continue
             if line.startswith("#"):
                 continue
@@ -184,8 +198,11 @@ def main():
                 continue
             csq_entries = csq_val.split(",")
 
-            # Build per-allele lookup for each FV_* projection.
-            fv_by_allele = {}  # info_id -> {allele -> dict}
+            # Build lookup dicts for each FV_* projection, keyed by allele OR by
+            # gene SYMBOL depending on the projection's first format field.
+            # (see header-parsing block: per-allele vs per-gene.)
+            fv_by_allele = {}  # info_id -> {allele  -> dict}  -- for FV_DBNSFP / FV_CLINVAR / FV_GNOMAD / SpliceAI
+            fv_by_symbol = {}  # info_id -> {symbol  -> dict}  -- for FV_GNOMAD_GENE / FV_OMIM / FV_CLINVAR_PROTEIN
             for fid, fnames in fv_fields.items():
                 raw = info.get(fid, "")
                 if not raw:
@@ -195,13 +212,17 @@ def main():
                     parts = entry.split("|")
                     if not parts:
                         continue
-                    allele = parts[0]
+                    key = parts[0]
                     rest = parts[1:]
-                    d[allele] = {
+                    d[key] = {
                         f: (rest[i] if i < len(rest) else "")
                         for i, f in enumerate(fnames)
                     }
-                fv_by_allele[fid] = d
+                if fv_key_type.get(fid) == "symbol":
+                    fv_by_symbol[fid] = d
+                else:
+                    # Default to allele-keyed for "allele" and "unknown".
+                    fv_by_allele[fid] = d
 
             for csq_entry in csq_entries:
                 csq_parts = csq_entry.split("|")
@@ -272,8 +293,16 @@ def main():
                     row["clin_sig"] = d.get("SIGNIFICANCE", "")
                     row["clin_stars"] = map_review_status_to_stars(d.get("REVIEW_STATUS", ""))
 
-                # --- FV_GNOMAD_GENE: gene-level constraint (matches first entry for this allele) ---
-                d = fv_by_allele.get("FV_GNOMAD_GENE", {}).get(allele)
+                # --- Gene-level projections: look up by CSQ SYMBOL, NOT allele.
+                # The fastvep INFO format is `SYMBOL|...` for these (see header parser).
+                # Prior to this fix the lookup was keyed by allele, which never matched
+                # a gene symbol -> loeuf/pli/omim_phenotype were silently empty for the
+                # entire cohort, which in turn broke the `constrained` flag and
+                # collapsed all pLoF and AM-strong missense into Tier 2 instead of Tier 1.
+                csq_symbol = csq.get("SYMBOL", "")
+
+                # --- FV_GNOMAD_GENE: gene-level constraint (LOEUF / pLI / MIS_Z / SYN_Z) ---
+                d = fv_by_symbol.get("FV_GNOMAD_GENE", {}).get(csq_symbol)
                 if d:
                     row["loeuf"] = d.get("LOEUF", "")
                     row["pli"] = d.get("PLI", "")
@@ -281,7 +310,7 @@ def main():
                     row["syn_z"] = d.get("SYN_Z", "")
 
                 # --- FV_OMIM: gene-level phenotype text ---
-                d = fv_by_allele.get("FV_OMIM", {}).get(allele)
+                d = fv_by_symbol.get("FV_OMIM", {}).get(csq_symbol)
                 if d:
                     row["omim_phenotype"] = d.get("PHENOTYPES", "")
 
