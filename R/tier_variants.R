@@ -399,7 +399,7 @@ assign_tier_research <- function(v) {
   v[is_ms & am_benign,        `:=`(tier = 5L, tier_reason = "missense: AM likely_benign")]
   v[!rare,                    `:=`(tier = 5L, tier_reason = "common (failed rarity gate)")]
   v[clinvar_blb,              `:=`(tier = 5L, tier_reason = "ClinVar B/LB")]
-  v[clinvar_plp,              `:=`(tier = 1L, tier_reason = "ClinVar P/LP (>=1 star)")]
+  v[clinvar_plp,              `:=`(tier = 1L, tier_reason = "ClinVar P/LP (star filter disabled; see methods §7.10)")]
   v[]
 }
 
