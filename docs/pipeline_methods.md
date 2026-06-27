@@ -545,6 +545,92 @@ and survive), but it could miss truly novel population-private regulatory
 variants in non-anchor genes. The v2 conservation and regulatory scoring
 mitigate this.
 
+### 7.9 gnomAD v4 constraint shift and the NF anchor-gene override
+
+gnomAD v4 applies a stricter LoF curation than v2, which lowers observed
+LoF counts and shifts pLI / LOEUF distributions for many genes. pLI is
+known to be unstable for small genes at the low-expected-LoF end in v4.
+For our four NF anchor genes the v4 metrics are:
+
+| Gene    | v4 pLI       | v4 LOEUF | v2 pLI | Constrained under our rule? |
+|---------|--------------|----------|--------|-----------------------------|
+| NF1     | 0.99946      | 0.45     | ~1.0   | YES (via pLI ≥ 0.9)         |
+| NF2     | ≈ 1          | low      | ~1.0   | YES (via pLI)               |
+| SMARCB1 | ≈ 1          | low      | ~1.0   | YES (via pLI)               |
+| **LZTR1** | **4.99e-132** | **1.997** | **~0.99** | **NO** (fails both)         |
+
+LZTR1 is an established schwannomatosis tumor suppressor (PMID 24362817,
+25335493), so applying our standard `constrained = (LOEUF < 0.35) | (pLI ≥
+0.9)` rule would incorrectly demote every LZTR1 pLoF candidate to Tier 2.
+
+To prevent missing real causal variants while still keeping our constraint-
+based rule honest for the rest of the genome, we add a small hardcoded
+override in `tier_variants.R`:
+
+> Rare pLoF (not NMD-escape) or AM-strong missense in
+> `{NF1, NF2, SMARCB1, LZTR1}` is Tier 1 regardless of cohort
+> constraint metrics.
+
+This adds at most ~10–30 extra Tier 1 variants per cohort, all in the
+four anchor genes. It does not affect modifier-gene tiering or any other
+constrained-gene call. The override is intentionally narrow — broader
+RAS/MAPK or PI3K/AKT pathway genes reach Tier 1 organically when their
+cohort constraint metrics support it, and adding them to the override
+would dilute its focus on known NF/SWN causal loci.
+
+In a future v2 of this pipeline we may move to a curated NF panel with
+gene-specific tier thresholds, but the four-gene override is the minimum
+safe correction for v1.
+
+### 7.10 ClinVar star-rating parser bug (cohort-specific caveat)
+
+`csq_to_wide_tab.py` (the per-sample fastvep-VCF → wide-tab converter)
+contained a bug in `map_review_status_to_stars`: it expected ClinVar
+REVIEW_STATUS strings to be space-separated (e.g. `"criteria provided,
+single submitter"`) but fastvep emits them with underscores
+(`"criteria_provided,_single_submitter"`). Every variant therefore got
+`clin_stars = 0` instead of the correct 1–4 star rating.
+
+Downstream impact on this cohort:
+- `clin_sig` is populated correctly (~214k of 624k variants)
+- `clin_stars` is silently 0 for every variant
+- The R rule `clinvar_plp = pathogenic-and-stars >= 1 OR is.na(stars)`
+  never fires because `stars == 0` is neither `>= 1` nor `NA`
+- ClinVar P/LP variants are therefore not promoted to Tier 1 by the
+  ClinVar override path (they reach Tier 1 only if they independently
+  satisfy a constraint-based class rule)
+
+**Fix landed in repo:** the underscored REVIEW_STATUS bug is fixed in
+`csq_to_wide_tab.py`, and the `"no assertion"` / `"no interpretation"`
+cases are explicitly handled before the 1-star substring check so they
+don't get mis-promoted. Next cohort run will have correct star ratings.
+
+**Workaround for this cohort:** the star filter in `tier_variants.R` is
+disabled — ALL ClinVar P/LP entries are promoted to Tier 1 regardless of
+star rating. The trade-off is that 0-star (`"no assertion criteria
+provided"`) submissions are now eligible. These are weaker evidence and
+should be down-weighted if collaborators want clinical-grade confidence.
+The same trade-off is reflected in `scripts/validate_cohort.sh` so the
+validation passes consistently. To restore the star filter once a future
+cohort is rebuilt with the fixed converter, see the comment in
+`tier_variants.R` `add_evidence()` near the `clinvar_plp` definition.
+
+### 7.11 Constraint patch script for legacy cohort tables
+
+`csq_to_wide_tab.py` was also fixed mid-project to handle gene-keyed
+projections (`FV_GNOMAD_GENE`, `FV_OMIM`, `FV_CLINVAR_PROTEIN`) — these
+were previously mis-keyed as allele-keyed, so `loeuf` / `pli` /
+`omim_phenotype` columns were silently empty for the entire cohort. That
+in turn made the `constrained` flag always FALSE and collapsed all pLoF
+and AM-strong missense into Tier 2.
+
+For collaborators with already-built cohort tables (built before the
+SYMBOL-keyed fix), `scripts/patch_constraint_into_cohort.sh` joins
+gnomAD v4.1 constraint metrics into the existing table without re-running
+Stage 1 across all samples. Filters to MANE select transcripts to dedupe
+per-transcript constraint rows. Run on `cohort.filtered.with_cohort.tab`
+(the input to `tier_variants.R`), then re-run Stage 4.
+
 ---
 
 ## 8. Validation

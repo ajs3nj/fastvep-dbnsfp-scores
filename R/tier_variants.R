@@ -63,6 +63,22 @@ SO_RANK <- c(
 
 LOF_TERMS   <- c("transcript_ablation","splice_acceptor_variant","splice_donor_variant",
                  "stop_gained","frameshift_variant","start_lost")
+
+# NF-spectrum tumor suppressor genes. Rare pLoF and AM-strong missense variants
+# in these genes are promoted to Tier 1 regardless of cohort-level constraint
+# metrics. Motivation: gnomAD v4 reports LZTR1 as essentially unconstrained
+# (pLI ~= 0, LOEUF ~2.0) -- a value that conflicts with its established role
+# as a schwannomatosis tumor suppressor (PMID: 24362817, 25335493). pLI is
+# known to be unstable for small genes at the low-expected-LoF end in v4's
+# stricter LoF curation. The other three (NF1, NF2, SMARCB1) are constrained
+# in v4 already, so the override is mostly a safety net for them and is
+# specifically required for LZTR1.
+#
+# This list intentionally does NOT include broader RAS/MAPK or PI3K/AKT
+# pathway genes -- those reach Tier 1 organically when they hit the
+# constrained criterion, and adding them here would dilute the override's
+# focus on known NF/SWN causal loci.
+NF_TUMOR_SUPPRESSORS <- c("NF1", "NF2", "SMARCB1", "LZTR1")
 SPLICE_NCAN <- c("splice_region_variant","splice_donor_5th_base_variant",
                  "splice_donor_region_variant","splice_polypyrimidine_tract_variant")
 MISSENSE    <- c("missense_variant","protein_altering_variant")
@@ -245,8 +261,19 @@ add_evidence <- function(v) {
 
   cs    <- tolower(as.character(v[[C$clin_sig]]))
   stars <- num_col(v, C$clin_stars)
-  v[, clinvar_plp := grepl("pathogenic", cs) & !grepl("benign", cs) &
-                     (T0(stars >= 1) | is.na(stars))]
+  # NOTE: the star filter (stars >= 1) is intentionally NOT applied here for
+  # this cohort. csq_to_wide_tab.py prior to the underscored-REVIEW_STATUS fix
+  # silently mapped every ClinVar entry to 0 stars, so requiring stars>=1
+  # would never fire. The Python fix is in the repo for future cohorts; once
+  # an upstream cohort run uses the fixed converter, restore the star filter
+  # by changing the line below to:
+  #   v[, clinvar_plp := grepl("pathogenic", cs) & !grepl("benign", cs) &
+  #                      (T0(stars >= 1) | is.na(stars))]
+  # Until then we accept all P/LP regardless of star rating; this may include
+  # 0-star (no-assertion-criteria) entries which are weaker evidence and
+  # should be down-weighted manually if collaborators want clinical-grade
+  # confidence. See docs/pipeline_methods.md §7.5.
+  v[, clinvar_plp := grepl("pathogenic", cs) & !grepl("benign", cs)]
   v[, clinvar_blb := grepl("benign", cs) & !grepl("pathogenic", cs)]
 
   motif <- as.character(v[[C$motif_name]])
@@ -297,6 +324,16 @@ assign_tier_research <- function(v) {
   v[is_lof & rare & (!constrained | nmd_escape | loftee_lc),
     `:=`(tier = 2L, tier_reason = "pLoF in non-constrained gene / NMD-escape")]
 
+  # NF-spectrum tumor suppressor override: rare pLoF in NF1/NF2/SMARCB1/LZTR1
+  # is Tier 1 regardless of cohort constraint metric. See NF_TUMOR_SUPPRESSORS
+  # definition for rationale (chiefly: gnomAD v4 mis-classifies LZTR1 as
+  # unconstrained, but it's an established schwannomatosis driver).
+  # NMD-escape filter is retained -- a frameshift in the final exon is still
+  # weaker evidence even in an NF anchor gene.
+  is_nf_anchor <- v$gene %in% NF_TUMOR_SUPPRESSORS
+  v[is_lof & rare & is_nf_anchor & !nmd_escape & hc_or_unknown,
+    `:=`(tier = 1L, tier_reason = "pLoF in NF-spectrum tumor suppressor (NF1/NF2/SMARCB1/LZTR1); not NMD-escape")]
+
   # ---- non-canonical splice ----
   is_sp <- variant_class == "splice_noncanonical"
   v[is_sp & rare & splice_high,                       `:=`(tier = 1L, tier_reason = "non-canonical splice + SpliceAI>=0.8")]
@@ -319,6 +356,10 @@ assign_tier_research <- function(v) {
 
   v[is_ms & rare & am_strong & constrained,
     `:=`(tier = 1L, tier_reason = "missense: AM>=0.85 in constrained gene")]
+  # NF-spectrum tumor suppressor override (mirrors the pLoF override): AM-strong
+  # missense in NF1/NF2/SMARCB1/LZTR1 is Tier 1 regardless of constraint metric.
+  v[is_ms & rare & am_strong & is_nf_anchor,
+    `:=`(tier = 1L, tier_reason = "missense: AM>=0.85 in NF-spectrum tumor suppressor (NF1/NF2/SMARCB1/LZTR1)")]
   v[is_ms & rare & am_path & !(am_strong & constrained),
     `:=`(tier = 2L, tier_reason = "missense: AM likely_pathogenic")]
   # Orthogonal-agreement Tier 1 promotion: AM + ESM1b independently agree on damaging

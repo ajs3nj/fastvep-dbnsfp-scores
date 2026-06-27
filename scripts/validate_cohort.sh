@@ -122,13 +122,20 @@ rm -f /tmp/_tier_dist.txt
 # ============================== class-conditional ============================
 section "4. Class-conditional rules"
 
-# 4a. Every Tier 1 pLoF should be in a constrained gene (or have ClinVar P/LP)
+# 4a. Every Tier 1 pLoF should be in a constrained gene, or have ClinVar P/LP,
+#     or sit in an NF-spectrum tumor suppressor (NF1/NF2/SMARCB1/LZTR1) where
+#     we apply a hardcoded Tier 1 override regardless of cohort constraint.
 viol=$(awk -F'\t' '
+  BEGIN {
+    split("NF1 NF2 SMARCB1 LZTR1", nf_anchors, " ")
+    for (i in nf_anchors) nf[nf_anchors[i]] = 1
+  }
   NR == 1 { for (i=1;i<=NF;i++) c[$i] = i; next }
   $c["tier"] == 1 && $c["variant_class"] == "pLoF" {
     cv = tolower($c["clin_sig"])
     has_clinvar_plp = (cv ~ /pathogenic/ && cv !~ /benign/)
     if (has_clinvar_plp) next  # ClinVar override -- OK
+    if ($c["gene"] in nf) next  # NF anchor override -- OK
     loeuf = $c["loeuf"]; pli = $c["pli"]
     constrained = (loeuf != "" && loeuf != "." && loeuf+0 < 0.35) || \
                   (pli   != "" && pli   != "." && pli+0   >= 0.9)
@@ -136,18 +143,24 @@ viol=$(awk -F'\t' '
   }
 ' "$VARIANTS" | head -5)
 if [[ -z "$viol" ]]; then
-  pass "all Tier 1 pLoF variants are in constrained genes (or ClinVar P/LP override)"
+  pass "all Tier 1 pLoF variants are in constrained genes (or ClinVar P/LP / NF-anchor override)"
 else
   fail "Tier 1 pLoF variants in NON-constrained genes (first 5):"
   echo "$viol" | sed 's/^/        /'
 fi
 
 # 4b. Every Tier 1 missense should match ONE of these paths:
-#   (a) ClinVar P/LP at >= 1 star
+#   (a) ClinVar P/LP
 #   (b) AM >= 0.85 in constrained gene (AM-strong primary path)
 #   (c) AM likely_pathogenic (>0.564) + ESM1b damaging (<=-7.5) + constrained
 #       (AM+ESM1b orthogonal-agreement secondary Tier 1 path)
+#   (d) AM >= 0.85 in NF-spectrum tumor suppressor (NF1/NF2/SMARCB1/LZTR1)
+#       regardless of cohort constraint metric
 viol=$(awk -F'\t' '
+  BEGIN {
+    split("NF1 NF2 SMARCB1 LZTR1", nf_anchors, " ")
+    for (i in nf_anchors) nf[nf_anchors[i]] = 1
+  }
   NR == 1 { for (i=1;i<=NF;i++) c[$i] = i; next }
   $c["tier"] == 1 && $c["variant_class"] == "missense" {
     cv = tolower($c["clin_sig"])
@@ -162,11 +175,12 @@ viol=$(awk -F'\t' '
                    (pli   != "" && pli   != "." && pli+0   >= 0.9)
     if (am_strong && constrained) next                                         # path (b)
     if (am_path && esm_damaging && constrained) next                           # path (c)
+    if (am_strong && ($c["gene"] in nf)) next                                  # path (d)
     print $c["chrom"]":"$c["pos"]" "$c["gene"]" am="am" esm="esm" loeuf="loeuf
   }
 ' "$VARIANTS" | head -5)
 if [[ -z "$viol" ]]; then
-  pass "all Tier 1 missense variants match a valid path (AM-strong+constrained, AM+ESM1b orthogonal+constrained, or ClinVar P/LP)"
+  pass "all Tier 1 missense variants match a valid path (AM-strong+constrained, AM+ESM1b orthogonal+constrained, AM-strong+NF-anchor, or ClinVar P/LP)"
 else
   fail "Tier 1 missense variants without any valid Tier 1 path (first 5):"
   echo "$viol" | sed 's/^/        /'
@@ -209,14 +223,18 @@ viol=$(awk -F'\t' '
     cv = tolower($c["clin_sig"])
     stars = $c["clin_stars"]
     is_plp = (cv ~ /pathogenic/ && cv !~ /benign/)
-    star_ok = (stars == "" || stars == ".") || (stars+0 >= 1)
+    # Star filter intentionally disabled (star_ok = 1) while clin_stars is
+    # silently 0 from the csq_to_wide_tab.py underscored-REVIEW_STATUS bug.
+    # Restore once cohort is rebuilt with the fixed converter:
+    #   star_ok = (stars == "" || stars == ".") || (stars+0 >= 1)
+    star_ok = 1
     if (is_plp && star_ok && $c["tier"] != "1") {
       print $c["chrom"]":"$c["pos"]" tier="$c["tier"]" cs="$c["clin_sig"]" stars="stars
     }
   }
 ' "$VARIANTS" | head -5)
 if [[ -z "$viol" ]]; then
-  pass "all ClinVar P/LP (>=1 star) variants are Tier 1"
+  pass "all ClinVar P/LP variants are Tier 1 (star filter currently disabled; see methods doc §7.5)"
 else
   fail "ClinVar P/LP variants NOT in Tier 1 (first 5):"
   echo "$viol" | sed 's/^/        /'

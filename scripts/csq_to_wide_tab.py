@@ -112,16 +112,36 @@ def safe_float(v):
 
 
 def map_review_status_to_stars(rs):
-    """Coarse mapping from ClinVar REVIEW_STATUS to ClinVar gold-star count."""
+    """Coarse mapping from ClinVar REVIEW_STATUS to ClinVar gold-star count.
+
+    fastvep emits REVIEW_STATUS with underscores ("criteria_provided,_single_submitter"),
+    not spaces. We normalise both delimiters here before matching. The
+    "no assertion" / "no interpretation" / "no classification" cases are checked
+    BEFORE the "criteria provided" 1-star rule because the "no assertion criteria
+    provided" string would otherwise match the 1-star substring check and be
+    mis-promoted from 0 stars.
+    """
     if not rs:
         return ""
-    rs = rs.lower()
+    rs = rs.lower().replace("_", " ")
+    # 4 stars: practice guideline
     if "practice guideline" in rs:
         return "4"
+    # 3 stars: expert panel
     if "reviewed by expert panel" in rs:
         return "3"
-    if "criteria provided, multiple submitters" in rs:
+    # 0 stars: explicit "no assertion / no interpretation / no classification"
+    #   (must run BEFORE the 1-star check since some include "criteria provided")
+    if ("no assertion criteria" in rs
+        or "no assertion provided" in rs
+        or "no interpretation" in rs
+        or "no classification" in rs):
+        return "0"
+    # 2 stars: multiple submitters in agreement (or conflict if you treat conflicts
+    # as 2-star -- ClinVar's convention is 2 stars for any multi-submitter call)
+    if "multiple submitters" in rs:
         return "2"
+    # 1 star: criteria provided by at least one submitter (no panel review)
     if "criteria provided" in rs:
         return "1"
     return "0"
