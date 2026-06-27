@@ -18,8 +18,11 @@
 #   05_nf_anchor_landscape.png      NF1/NF2/SMARCB1/LZTR1 variants by tier (positive control)
 #   06_variant_recurrence.png       n_carriers distribution -- private vs recurrent
 #   07_top_recurrent_t12.png        Top 30 most-recurrent Tier 1+2 variants in cohort
-#   08_sample_gene_hotspots.png     (sample, gene) pairs with >=2 rare Tier 1-3 variants
-#                                   (compound-het / multi-hit candidates)
+#   08_sample_gene_hotspots.png     (sample, gene) pairs with >=2 rare Tier 1+2 variants
+#                                   (compound-het / multi-hit candidates). NF anchor
+#                                   pairs always promoted to top; known mappability-poor
+#                                   gene families (ZNF*, KRT*, MUC*, OR*, HLA-*, etc.)
+#                                   filtered out -- see QC_ARTIFACT_GENE_PATTERNS.
 #
 # Dependencies: data.table, ggplot2, scales. (All available via conda-forge.)
 # -----------------------------------------------------------------------------
@@ -302,10 +305,28 @@ fig_nf_anchor_landscape <- function(v, cohort_name, out_path) {
   d[, tier := factor(tier, levels = c(1L, 2L, 3L, 4L, 5L))]
 
   totals <- v[gene %in% NF_ANCHORS, .(total = .N), by = .(gene)]
-  totals[, gene := factor(gene, levels = NF_ANCHORS)]
+  totals[, gene := factor(gene, levels = NF_ANCHORS)]; setorder(totals, gene)
+  # Break Tier 1 out from Tier 1+2 -- Tier 1 alone is the more actionable number
+  # for collaborators. Order by visual y-axis (NF1, NF2, SMARCB1, LZTR1), not
+  # alphabetically -- the original alphabetical caption was confusing because it
+  # didn't follow the bar order on the plot.
+  t1  <- v[gene %in% NF_ANCHORS & tier == 1L,
+           .(t1_count = .N), by = .(gene)]
+  t1[,  gene := factor(gene, levels = NF_ANCHORS)]; setorder(t1, gene)
   t12 <- v[gene %in% NF_ANCHORS & tier %in% c(1L, 2L),
            .(t12_count = .N), by = .(gene)]
-  t12[, gene := factor(gene, levels = NF_ANCHORS)]
+  t12[, gene := factor(gene, levels = NF_ANCHORS)]; setorder(t12, gene)
+  # Some anchors may have zero T1 or T1+2 -- fill missing with 0 so the
+  # caption sprintf doesn't drop them.
+  fill_zero <- function(d, col, key_levels) {
+    d <- merge(data.table(gene = factor(key_levels, levels = key_levels)),
+               d, by = "gene", all.x = TRUE)
+    d[is.na(get(col)), (col) := 0L]
+    setorder(d, gene)
+    d
+  }
+  t1  <- fill_zero(t1,  "t1_count",  NF_ANCHORS)
+  t12 <- fill_zero(t12, "t12_count", NF_ANCHORS)
 
   p <- ggplot(d, aes(y = gene, x = N, fill = tier)) +
     geom_col(position = position_stack(reverse = TRUE)) +
@@ -323,8 +344,9 @@ fig_nf_anchor_landscape <- function(v, cohort_name, out_path) {
       x = "Number of distinct variants in cohort",
       y = NULL,
       caption = paste(
-        sprintf("Tier 1+2 totals -- %s",
-                paste(sprintf("%s: %d", t12$gene, t12$t12_count), collapse = "  |  ")),
+        sprintf("Tier 1 / Tier 1+2 per gene -- %s",
+                paste(sprintf("%s: %d / %d", t1$gene, t1$t1_count, t12$t12_count),
+                      collapse = "  |  ")),
         "Tier 1 hits in these genes are immediate candidates for re-contact / phenotype review.",
         "If any anchor is Tier-1-empty, double-check that constraint columns and the NF",
         "anchor override (see tier_variants.R) are populated for this run.",
@@ -459,32 +481,89 @@ fig_top_recurrent_variants <- function(v, cohort_name, out_path, top_n = 30) {
 # ----------------------------------------------------------------------------
 # Figure 08 -- Per-sample, per-gene hotspots (compound-het / multi-hit)
 #
-# For each (sample, gene) pair, count how many distinct rare Tier 1-3 variants
+# For each (sample, gene) pair, count how many distinct rare Tier 1+2 variants
 # the sample carries in that gene. Pairs with >=2 distinct variants are
 # candidates for:
 #   - Compound heterozygous recessive effects (if both variants het)
 #   - Multi-hit somatic events (e.g. two-hit tumor suppressor inactivation)
 #   - Phase artifacts (same haplotype, double-counted)
-# Phasing requires trio data or long-read sequencing for confirmation, but
-# these pairs are the right manual-review starting point.
+#
+# CRITICAL: this analysis is dominated by mappability artifacts unless we
+# filter out gene families where short-read alignments routinely mis-map
+# between paralogs. The first draft of this figure showed the top 30 slots
+# all occupied by ZNF717 (26-29 "variants" each, in the same 30 samples) --
+# that's reads bleeding between zinc-finger paralogs on chr19, not biology.
+# We filter the same families that standard population-genetics QC drops:
+#   * ZNF*, ZSCAN*       zinc-finger paralog clusters
+#   * KRT*               keratin paralog clusters
+#   * MUC*               mucin tandem repeats (low complexity)
+#   * OR*                olfactory receptor cluster (>800 paralogs)
+#   * HLA-*              highly polymorphic, reads mis-map to ref
+#   * KIR*               killer-cell Ig-like receptor cluster
+#   * DEFB*              beta-defensin tandem repeats
+#   * PRAMEF*            PRAME family tandem repeats
+#   * GOLGA8*, NBPF*     segmental-duplication-rich families
+# Real recessive compound-het signal in any of these families requires
+# long-read or paralog-aware re-alignment; we explicitly exclude them here
+# rather than risk presenting noise as candidates. The filter is patterned
+# (not a hard list) so we don't have to enumerate every paralog.
+#
+# Tier filter: T1+T2 only (was T1-3 in v1; T3 includes "AM ambiguous" which
+# is too permissive and inflates the hotspot count with weak evidence).
 #
 # Streams the 30+ GB genotype table via awk; never reads it into R.
 # ----------------------------------------------------------------------------
+
+# Gene-name regex patterns we always drop from sample-gene hotspot analysis.
+# Comment per entry explains the biology. Add/remove as needed.
+QC_ARTIFACT_GENE_PATTERNS <- c(
+  "^ZNF",      # zinc-finger paralog clusters (chr19 etc.)
+  "^ZSCAN",    # zinc finger and SCAN domain-containing
+  "^KRT",      # keratin paralog clusters (chr12, chr17)
+  "^MUC",      # mucin tandem repeats
+  "^OR[0-9]",  # olfactory receptors (gene names like OR2T1, OR5H6)
+  "^HLA-",     # MHC -- highly polymorphic, mis-mapping common
+  "^KIR",      # killer-cell Ig-like receptor cluster (chr19)
+  "^DEFB",     # beta-defensin tandem repeats (chr8)
+  "^PRAMEF",   # PRAME family tandem repeats (chr1)
+  "^GOLGA8",   # segmental-duplication-rich family
+  "^NBPF",     # neuroblastoma breakpoint family (chr1, SD-rich)
+  "^TRBV",     # T-cell receptor beta variable
+  "^IGHV",     # immunoglobulin heavy variable
+  "^IGKV",     # immunoglobulin kappa variable
+  "^IGLV"      # immunoglobulin lambda variable
+)
+
+is_qc_artifact_gene <- function(g) {
+  if (length(g) == 0L) return(logical(0))
+  out <- rep(FALSE, length(g))
+  for (pat in QC_ARTIFACT_GENE_PATTERNS) {
+    out <- out | grepl(pat, g, perl = TRUE)
+  }
+  out
+}
+
 fig_sample_gene_hotspots <- function(v, gt_path, cohort_name, out_path, top_n = 30) {
   if (is.null(gt_path)) {
     message("[fig] skipping sample_gene_hotspots (no --genotypes path provided)")
     return(invisible())
   }
 
-  # Lookup table: variant_key -> gene (Tier 1-3 only, gene-annotated)
-  vt <- v[!is.na(gene) & gene != "" & tier %in% c(1L, 2L, 3L),
+  # Lookup table: variant_key -> gene (Tier 1+2 only, gene-annotated, and NOT
+  # in a known mappability-poor / paralog-rich family).
+  vt <- v[!is.na(gene) & gene != "" & tier %in% c(1L, 2L),
           .(chrom = as.character(chrom),
             pos   = as.integer(pos),
             ref   = as.character(ref),
             alt   = as.character(alt),
             gene  = as.character(gene))]
+  n_pre_filter <- nrow(vt)
+  vt <- vt[!is_qc_artifact_gene(gene)]
+  n_post_filter <- nrow(vt)
+  message(sprintf("[fig 08] qc-artifact filter removed %d variants (%d -> %d)",
+                  n_pre_filter - n_post_filter, n_pre_filter, n_post_filter))
   if (nrow(vt) == 0L) {
-    message("[fig] skipping sample_gene_hotspots (no gene-annotated Tier 1-3 variants)")
+    message("[fig] skipping sample_gene_hotspots (no gene-annotated Tier 1+2 variants after QC filter)")
     return(invisible())
   }
   keys_tmp <- tempfile(fileext = ".tsv")
@@ -492,7 +571,7 @@ fig_sample_gene_hotspots <- function(v, gt_path, cohort_name, out_path, top_n = 
   on.exit(unlink(keys_tmp), add = TRUE)
 
   # Stream genotypes: $1=chrom, $2=pos, $3=ref, $4=alt, $5=sample, $6=gt
-  # For each carrier (het or hom_alt) line where variant is in our Tier 1-3 set,
+  # For each carrier (het or hom_alt) line where variant is in our T1+T2 set,
   # increment count for (sample, gene). Emit (sample, gene, count).
   awk_cmd <- sprintf(
     "awk -F'\\t' '
@@ -519,42 +598,53 @@ fig_sample_gene_hotspots <- function(v, gt_path, cohort_name, out_path, top_n = 
     error = function(e) { message("[fig] hotspot awk failed: ", conditionMessage(e)); NULL }
   )
   if (is.null(pairs) || nrow(pairs) == 0L) {
-    message("[fig] skipping sample_gene_hotspots (no (sample, gene) pair has >=2 rare Tier 1-3 variants)")
+    message("[fig] skipping sample_gene_hotspots (no (sample, gene) pair has >=2 rare Tier 1+2 variants after QC filter)")
     return(invisible())
   }
-  setorder(pairs, -n_variants, gene, sample)
-  full_n   <- nrow(pairs)                       # capture BEFORE cropping for caption
-  full_max <- max(pairs$n_variants)
+
+  # Promote NF anchor pairs to the top REGARDLESS of variant count. The plain
+  # rank-by-count view would bury an NF1 sample with 3 variants under TTN /
+  # MUC4 / etc samples with 8+ variants; for an NF cohort the anchor pairs
+  # are the highest-priority cases even at low counts.
+  NF_ANCHORS <- c("NF1", "NF2", "SMARCB1", "LZTR1")
+  pairs[, is_anchor := gene %in% NF_ANCHORS]
+  setorder(pairs, -is_anchor, -n_variants, gene, sample)
+  full_n        <- nrow(pairs)                # all (sample, gene) pairs that survived QC filter
+  full_max      <- max(pairs$n_variants)
+  full_n_anchor <- pairs[is_anchor == TRUE, .N]
   pairs <- head(pairs, top_n)
   pairs[, label := sprintf("%-12s  carrier:  %s", gene, sample)]
   pairs[, label := factor(label, levels = rev(unique(label)))]
-
-  # Color by anchor-gene membership to make NF anchors pop visually
-  NF_ANCHORS <- c("NF1", "NF2", "SMARCB1", "LZTR1")
-  pairs[, anchor := ifelse(gene %in% NF_ANCHORS, "NF anchor gene", "Other")]
-  pairs[, anchor := factor(anchor, levels = c("NF anchor gene", "Other"))]
+  pairs[, anchor := factor(ifelse(is_anchor, "NF anchor gene", "Other"),
+                           levels = c("NF anchor gene", "Other"))]
   anchor_colors <- c("NF anchor gene" = "#c0392b", "Other" = "#8e44ad")
 
   p <- ggplot(pairs, aes(x = n_variants, y = label, fill = anchor)) +
     geom_col() +
     geom_text(aes(label = paste0(n_variants, " variants")),
               hjust = -0.12, size = 3.6, color = "grey20") +
-    scale_fill_manual(values = anchor_colors, name = NULL) +
+    scale_fill_manual(values = anchor_colors, name = NULL, drop = FALSE) +
     scale_x_continuous(expand = expansion(mult = c(0, 0.22)),
                        breaks = pretty_breaks(n = 6)) +
     labs(
-      title    = sprintf("Top %d of %s sample-gene hotspots (>=2 rare Tier 1-3 variants)",
+      title    = sprintf("Sample-gene hotspots: top %d of %s (>=2 rare Tier 1+2 variants)",
                          nrow(pairs), comma(full_n)),
-      subtitle = sprintf("%s -- compound-heterozygous / multi-hit candidates  (max in cohort: %d variants)",
-                         cohort_name, full_max),
-      x = "Distinct rare Tier 1-3 variants in same gene, same sample",
+      subtitle = sprintf("%s -- compound-heterozygous / multi-hit candidates  (max in cohort: %d variants;  NF-anchor pairs: %d)",
+                         cohort_name, full_max, full_n_anchor),
+      x = "Distinct rare Tier 1+2 variants in same gene, same sample",
       y = NULL,
       caption = paste(
         "Each row: one sample carrying multiple distinct rare predicted-damaging",
-        "variants in the same gene. Candidates for compound-heterozygous recessive",
-        "effects (if both het) or multi-hit somatic two-hit events. Phase by trio",
-        "genotypes or long-read sequencing before clinical interpretation.",
-        "NF anchor-gene hotspots highlighted in red.",
+        "(Tier 1+2) variants in the same gene. Candidates for compound-heterozygous",
+        "recessive effects (if both het), multi-hit somatic two-hit events, or",
+        "rare hypermutation. NF anchor-gene pairs sorted to the top regardless of",
+        "variant count (red); other pairs ranked by count (purple).",
+        "",
+        "QC artifact filter applied: ZNF*/ZSCAN*/KRT*/MUC*/OR*/HLA-*/KIR*/DEFB*/",
+        "PRAMEF*/GOLGA8*/NBPF*/T-cell + Ig V genes dropped because short-read",
+        "alignments routinely mis-map between paralogs in these families. Real",
+        "recessive signal in those families needs long-read or paralog-aware",
+        "re-alignment; see fig_sample_gene_hotspots() comment for the full list.",
         sep = "\n"
       )
     ) +
