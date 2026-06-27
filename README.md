@@ -7,7 +7,9 @@ priority tiers, flags modifier candidates as a parallel track, and produces coll
 per-variant and per-gene cohort summaries with clinical-presentation figures.
 
 If you received this repo as a handoff (tarball or git clone), this README is the place to
-start. Methods-level detail lives in `docs/pipeline_methods.md`.
+start for a quick orientation. For the **column-by-column dictionary of every output file
+and the complete tiering rules table**, see `docs/results_guide.md`. For comprehensive
+methods, see `docs/pipeline_methods.md`.
 
 ---
 
@@ -159,7 +161,8 @@ parameters and re-tier:
 
 | Document | What it covers |
 |----------|----------------|
-| **`README.md`** *(this file)* | Output schema, interpretation guide, limitations summary, doc map |
+| **`README.md`** *(this file)* | Quick orientation: what the outputs are, how to prioritize results, limitations summary, doc map |
+| **`docs/results_guide.md`** | **Reading reference.** Full column dictionary for every output file, complete tiering rules table (all 23 rules with conditions), reading recipes for common questions. Start here when reading the data |
 | **`docs/pipeline_methods.md`** | Comprehensive methods: data sources, every tier rule with rationale, validation, known gotchas. The reference document for collaborators publishing results from this pipeline |
 | **`docs/tiering.md`** | Original tiering-scheme design spec. Higher-level conceptual reference for the class-conditional logic |
 | **`docs/noncoding_v2_plan.md`** | Roadmap for v2 non-coding annotation (SpliceAI restore, PhyloP/GERP, regulatory, LOFTEE) |
