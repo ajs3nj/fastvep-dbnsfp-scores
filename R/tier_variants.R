@@ -328,7 +328,7 @@ assign_tier_research <- function(v) {
   # below. The actual NF-anchor Tier 1 promotions are applied at the end of
   # this function (alongside the ClinVar override) so they cannot be silently
   # demoted by a subsequent rule.
-  is_nf_anchor <- v[[C$gene]] %in% NF_TUMOR_SUPPRESSORS
+  is_nf_anchor <- v[[COLS$gene]] %in% NF_TUMOR_SUPPRESSORS
 
   # ---- non-canonical splice ----
   is_sp <- variant_class == "splice_noncanonical"
