@@ -142,24 +142,33 @@ else
   echo "$viol" | sed 's/^/        /'
 fi
 
-# 4b. Every Tier 1 missense should have AM >= 0.85 in constrained gene, OR ClinVar P/LP
+# 4b. Every Tier 1 missense should match ONE of these paths:
+#   (a) ClinVar P/LP at >= 1 star
+#   (b) AM >= 0.85 in constrained gene (AM-strong primary path)
+#   (c) AM likely_pathogenic (>0.564) + ESM1b damaging (<=-7.5) + constrained
+#       (AM+ESM1b orthogonal-agreement secondary Tier 1 path)
 viol=$(awk -F'\t' '
   NR == 1 { for (i=1;i<=NF;i++) c[$i] = i; next }
   $c["tier"] == 1 && $c["variant_class"] == "missense" {
     cv = tolower($c["clin_sig"])
     has_clinvar_plp = (cv ~ /pathogenic/ && cv !~ /benign/)
-    if (has_clinvar_plp) next
-    am = $c["alphamissense"]; loeuf = $c["loeuf"]; pli = $c["pli"]
-    am_strong = (am != "" && am != "." && am+0 >= 0.85)
-    constrained = (loeuf != "" && loeuf != "." && loeuf+0 < 0.35) || \
-                  (pli   != "" && pli   != "." && pli+0   >= 0.9)
-    if (!(am_strong && constrained)) print $c["chrom"]":"$c["pos"]" "$c["gene"]" am="am" loeuf="loeuf
+    if (has_clinvar_plp) next                                                  # path (a)
+    am  = $c["alphamissense"]; esm = $c["esm1b"]
+    loeuf = $c["loeuf"]; pli = $c["pli"]
+    am_strong    = (am  != "" && am  != "." && am+0  >= 0.85)
+    am_path      = (am  != "" && am  != "." && am+0  >  0.564)
+    esm_damaging = (esm != "" && esm != "." && esm+0 <= -7.5)
+    constrained  = (loeuf != "" && loeuf != "." && loeuf+0 < 0.35) || \
+                   (pli   != "" && pli   != "." && pli+0   >= 0.9)
+    if (am_strong && constrained) next                                         # path (b)
+    if (am_path && esm_damaging && constrained) next                           # path (c)
+    print $c["chrom"]":"$c["pos"]" "$c["gene"]" am="am" esm="esm" loeuf="loeuf
   }
 ' "$VARIANTS" | head -5)
 if [[ -z "$viol" ]]; then
-  pass "all Tier 1 missense variants have AM>=0.85 in constrained genes (or ClinVar P/LP)"
+  pass "all Tier 1 missense variants match a valid path (AM-strong+constrained, AM+ESM1b orthogonal+constrained, or ClinVar P/LP)"
 else
-  fail "Tier 1 missense variants without AM-strong+constrained (first 5):"
+  fail "Tier 1 missense variants without any valid Tier 1 path (first 5):"
   echo "$viol" | sed 's/^/        /'
 fi
 

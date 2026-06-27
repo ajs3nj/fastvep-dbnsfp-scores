@@ -304,17 +304,36 @@ assign_tier_research <- function(v) {
   v[is_sp & rare & splice_flag & !splice_likely,      `:=`(tier = 3L, tier_reason = "non-canonical splice + SpliceAI 0.2-0.5")]
 
   # ---- missense ----
+  # Missense uses AlphaMissense as primary; ESM1b adds orthogonal evidence.
+  # The two predictors are genuinely orthogonal (AM is MSA-based, ESM1b is
+  # MSA-free protein language model on raw sequence), so their agreement is
+  # meaningful additive evidence -- NOT the same as stacking correlated tools
+  # like AM + REVEL. Specifically:
+  #   - AM-strong (>=0.85) + constrained gene -> Tier 1 (primary calibrated path)
+  #   - AM likely_pathogenic + ESM1b damaging + constrained -> Tier 1 (orthogonal)
+  #   - AM missing + ESM1b damaging + constrained -> Tier 2 (ESM1b-only fallback;
+  #     catches variants outside dbNSFP AM coverage where ESM1b has a value)
   is_ms <- variant_class == "missense"
   am_num <- num_col(v, COLS$alphamissense)
   am_missing <- is.na(am_num)
+
   v[is_ms & rare & am_strong & constrained,
     `:=`(tier = 1L, tier_reason = "missense: AM>=0.85 in constrained gene")]
   v[is_ms & rare & am_path & !(am_strong & constrained),
     `:=`(tier = 2L, tier_reason = "missense: AM likely_pathogenic")]
+  # Orthogonal-agreement Tier 1 promotion: AM + ESM1b independently agree on damaging
+  # in a constrained gene. Fires AFTER the AM-only Tier 2 rule above, so it correctly
+  # promotes AM-likely-pathogenic cases (not just AM-strong) when ESM1b confirms.
+  v[is_ms & rare & constrained & am_path & esm_damaging,
+    `:=`(tier = 1L, tier_reason = "missense: AM likely_pathogenic + ESM1b damaging (orthogonal agreement) in constrained gene")]
+  # ESM1b-only fallback Tier 2: AM missing but ESM1b damaging in a constrained gene.
+  # Catches variants outside dbNSFP AM coverage where ESM1b still has a score.
+  v[is_ms & rare & constrained & am_missing & esm_damaging,
+    `:=`(tier = 2L, tier_reason = "missense: ESM1b damaging in constrained gene (AM missing)")]
   v[is_ms & rare & am_ambig & !am_path,
     `:=`(tier = 3L, tier_reason = "missense: AM ambiguous (0.34-0.564)")]
-  v[is_ms & rare & am_missing & constrained,
-    `:=`(tier = 3L, tier_reason = "rare missense in constrained gene; AM missing")]
+  v[is_ms & rare & am_missing & constrained & !esm_damaging,
+    `:=`(tier = 3L, tier_reason = "rare missense in constrained gene; AM missing, ESM1b not damaging")]
 
   # ---- in-frame ----
   is_if <- variant_class == "inframe"

@@ -258,7 +258,7 @@ physically don't apply to them.
 |---|---|---|---|---|---|
 | **pLoF** (stop_gained, frameshift, splice_acceptor, splice_donor, start_lost, transcript_ablation) | rare + constrained gene (LOEUF<0.35 or pLI≥0.9) + not NMD-escape (heuristic from EXON i/N field) | rare LoF in unconstrained gene; or NMD-escape | — | — | common, or ClinVar B/LB |
 | **non-canonical splice** | rare + SpliceAI ≥ 0.8 | rare + SpliceAI 0.5–0.8 | rare + SpliceAI 0.2–0.5 | rare, no SpliceAI signal | common |
-| **missense / protein_altering** | ClinVar P/LP ≥1 star; or rare + AlphaMissense ≥ 0.85 in constrained gene | rare + AlphaMissense likely_pathogenic (>0.564) | rare + AlphaMissense ambiguous (0.34–0.564); or rare missense in constrained gene with AM missing | rare, AM neutral or missing | AM likely_benign (<0.34), or common, or ClinVar B/LB |
+| **missense / protein_altering** | ClinVar P/LP ≥1 star; or rare + AM ≥ 0.85 in constrained gene; **or rare + AM likely_pathogenic (>0.564) + ESM1b damaging (≤−7.5) in constrained gene** (orthogonal-agreement path) | rare + AM likely_pathogenic (>0.564); **or rare + ESM1b damaging in constrained gene with AM missing** (ESM1b-only fallback) | rare + AM ambiguous (0.34–0.564); or rare missense in constrained gene with AM missing and ESM1b not damaging | rare, AM neutral or missing | AM likely_benign (<0.34), or common, or ClinVar B/LB |
 | **in-frame indel** | — | rare + LOEUF<0.35; or SpliceAI ≥0.5 | rare in moderately constrained gene; or SpliceAI 0.2–0.5 | rare, no constraint | common |
 | **synonymous / UTR / intronic / non-coding tx** | — | rare + SpliceAI ≥0.5 (cryptic splice) | rare + SpliceAI 0.2–0.5 | rare, no SpliceAI signal | common |
 | **regulatory** (motif/TFBS, regulatory_region_variant) | — | rare + motif disruption + strong SpliceAI | motif/TFBS overlap + rare | rare, no signal | common |
@@ -403,10 +403,17 @@ Standard follow-up:
 3. For pLoF: confirm the gene is constrained (`loeuf` < 0.35), confirm
    `nmd_escape` is FALSE, and verify the consequence call against the
    VCF (fastVEP's call should match Ensembl VEP).
-4. For missense: check `alphamissense` and `am_class` — Tier 1 missense
-   should have AM ≥ 0.85. Cross-check `revel` and `esm1b` as orthogonal
-   confirmation (they should agree, but the tier rule does *not* require
-   their agreement to avoid double-counting correlated predictors).
+4. For missense: check `tier_reason` to see which path fired:
+   - `AM>=0.85 in constrained gene` — primary calibrated path (AlphaMissense alone)
+   - `AM likely_pathogenic + ESM1b damaging (orthogonal agreement) in constrained gene` —
+     two predictors built on independent representations (AM is MSA-based; ESM1b is
+     MSA-free protein language model) agree on damaging
+   - `ESM1b damaging in constrained gene (AM missing)` — ESM1b-only path for variants
+     outside dbNSFP AM coverage
+   - `ClinVar P/LP (>=1 star)` — expert opinion override
+   Cross-check `revel` for additional confirmation, but REVEL is correlated with
+   AM so agreement doesn't add much new information; disagreement is worth
+   investigating manually.
 5. For ClinVar P/LP overrides: confirm `clin_stars ≥ 1` and review the
    variant in ClinVar directly.
 
