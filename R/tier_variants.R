@@ -324,15 +324,11 @@ assign_tier_research <- function(v) {
   v[is_lof & rare & (!constrained | nmd_escape | loftee_lc),
     `:=`(tier = 2L, tier_reason = "pLoF in non-constrained gene / NMD-escape")]
 
-  # NF-spectrum tumor suppressor override: rare pLoF in NF1/NF2/SMARCB1/LZTR1
-  # is Tier 1 regardless of cohort constraint metric. See NF_TUMOR_SUPPRESSORS
-  # definition for rationale (chiefly: gnomAD v4 mis-classifies LZTR1 as
-  # unconstrained, but it's an established schwannomatosis driver).
-  # NMD-escape filter is retained -- a frameshift in the final exon is still
-  # weaker evidence even in an NF anchor gene.
-  is_nf_anchor <- v$gene %in% NF_TUMOR_SUPPRESSORS
-  v[is_lof & rare & is_nf_anchor & !nmd_escape & hc_or_unknown,
-    `:=`(tier = 1L, tier_reason = "pLoF in NF-spectrum tumor suppressor (NF1/NF2/SMARCB1/LZTR1); not NMD-escape")]
+  # NF anchor membership flag is set here for use by the late-override block
+  # below. The actual NF-anchor Tier 1 promotions are applied at the end of
+  # this function (alongside the ClinVar override) so they cannot be silently
+  # demoted by a subsequent rule.
+  is_nf_anchor <- v[[C$gene]] %in% NF_TUMOR_SUPPRESSORS
 
   # ---- non-canonical splice ----
   is_sp <- variant_class == "splice_noncanonical"
@@ -356,10 +352,6 @@ assign_tier_research <- function(v) {
 
   v[is_ms & rare & am_strong & constrained,
     `:=`(tier = 1L, tier_reason = "missense: AM>=0.85 in constrained gene")]
-  # NF-spectrum tumor suppressor override (mirrors the pLoF override): AM-strong
-  # missense in NF1/NF2/SMARCB1/LZTR1 is Tier 1 regardless of constraint metric.
-  v[is_ms & rare & am_strong & is_nf_anchor,
-    `:=`(tier = 1L, tier_reason = "missense: AM>=0.85 in NF-spectrum tumor suppressor (NF1/NF2/SMARCB1/LZTR1)")]
   v[is_ms & rare & am_path & !(am_strong & constrained),
     `:=`(tier = 2L, tier_reason = "missense: AM likely_pathogenic")]
   # Orthogonal-agreement Tier 1 promotion: AM + ESM1b independently agree on damaging
@@ -395,10 +387,28 @@ assign_tier_research <- function(v) {
   v[is_reg & rare & has_motif & splice_likely,         `:=`(tier = 2L, tier_reason = "regulatory: motif + SpliceAI>=0.5")]
   v[is_reg & rare & (has_motif | splice_flag),         `:=`(tier = 3L, tier_reason = "regulatory: motif or SpliceAI 0.2-0.5")]
 
-  # ---- benign / common overrides (applied late) ----
+  # ---- late overrides (applied last; cannot be demoted by earlier rules) ----
+  # Benign / common downgrades first.
   v[is_ms & am_benign,        `:=`(tier = 5L, tier_reason = "missense: AM likely_benign")]
   v[!rare,                    `:=`(tier = 5L, tier_reason = "common (failed rarity gate)")]
   v[clinvar_blb,              `:=`(tier = 5L, tier_reason = "ClinVar B/LB")]
+
+  # NF-spectrum tumor suppressor overrides (rare pLoF and AM-strong missense in
+  # NF1/NF2/SMARCB1/LZTR1 -> Tier 1 regardless of cohort constraint metric).
+  # Applied here -- in the late-override block -- rather than inline with the
+  # class rules because an inline application would be silently demoted by
+  # the AM-only Tier 2 rule for non-constrained anchors (notably LZTR1, which
+  # gnomAD v4 mis-classifies as unconstrained; see NF_TUMOR_SUPPRESSORS def).
+  # NMD-escape still filters the pLoF branch -- a final-exon frameshift is
+  # still weaker evidence even in an NF anchor.
+  v[is_lof & rare & is_nf_anchor & !nmd_escape & hc_or_unknown,
+    `:=`(tier = 1L, tier_reason = "pLoF in NF-spectrum tumor suppressor (NF1/NF2/SMARCB1/LZTR1); not NMD-escape")]
+  v[is_ms  & rare & is_nf_anchor & am_strong,
+    `:=`(tier = 1L, tier_reason = "missense: AM>=0.85 in NF-spectrum tumor suppressor (NF1/NF2/SMARCB1/LZTR1)")]
+
+  # ClinVar P/LP override -- the final word for variants ClinVar already
+  # classifies as Pathogenic / Likely_pathogenic. Star filter currently
+  # disabled; see add_evidence() comment near `clinvar_plp` definition.
   v[clinvar_plp,              `:=`(tier = 1L, tier_reason = "ClinVar P/LP (star filter disabled; see methods §7.10)")]
   v[]
 }
