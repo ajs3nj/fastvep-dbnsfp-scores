@@ -212,23 +212,37 @@ fig_per_sample_burden <- function(v, gt_path, cohort_name, out_path) {
 
   med <- median(per_sample$n_t12)
   q90 <- quantile(per_sample$n_t12, 0.9)
+  q10 <- quantile(per_sample$n_t12, 0.1)
+
+  # Adaptive binwidth: aim for ~40 bins across the observed range. The original
+  # binwidth=1 made bars width-1-unit on a 4500-unit axis -- invisible at any
+  # render resolution. Freedman-Diaconis would be more principled but the
+  # fixed-bin-count approach is easier to read for a presentation figure.
+  n_range  <- diff(range(per_sample$n_t12, na.rm = TRUE))
+  binwidth <- max(1, round(n_range / 40))
 
   p <- ggplot(per_sample, aes(x = n_t12)) +
-    geom_histogram(binwidth = 1, fill = TIER_COLORS["2"], color = "white", boundary = 0) +
-    geom_vline(xintercept = med, linetype = "dashed", color = "grey30", linewidth = 0.6) +
+    geom_histogram(binwidth = binwidth, fill = TIER_COLORS["2"],
+                   color = "white", boundary = 0) +
+    geom_vline(xintercept = med, linetype = "dashed",
+               color = "grey30", linewidth = 0.6) +
     annotate("text", x = med, y = Inf,
-             label = sprintf("median = %g", med),
+             label = sprintf("median = %s", comma(med)),
              vjust = 1.6, hjust = -0.1, size = 4.5, color = "grey20") +
     scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.05))) +
-    scale_x_continuous(breaks = pretty_breaks(n = 8)) +
+    scale_x_continuous(labels = comma, breaks = pretty_breaks(n = 8)) +
     labs(
       title    = "Per-sample burden: Tier 1 + Tier 2 variants",
       subtitle = sprintf("%s — %d samples, distribution of high-priority variants per sample",
                          cohort_name, nrow(per_sample)),
       x = "Number of Tier 1 or Tier 2 variants",
       y = "Number of samples",
-      caption = sprintf("Median %g  |  90th percentile %g.\nOutlier samples may reflect contamination, ancestry effects, or genuine high burden — worth manual review.",
-                        med, q90)
+      caption = sprintf(paste0(
+        "10th percentile %s  |  Median %s  |  90th percentile %s.\n",
+        "Sample-level burden of high-priority variants. Outlier samples may reflect ",
+        "contamination, ancestry effects (rare-but-population-private variants),\n",
+        "or genuine high burden — worth manual review."),
+        comma(q10), comma(med), comma(q90))
     ) +
     THEME_PRES
 
