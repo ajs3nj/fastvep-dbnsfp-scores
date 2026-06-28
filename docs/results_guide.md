@@ -246,7 +246,105 @@ OOM.
 
 ---
 
-## 5. Reading recipes
+## 5. Variant ↔ sample relationship
+
+The three output files are designed around one architectural decision: **variant
+annotations are per-variant, sample carriership is per-(variant, sample)**, and the two are
+kept in separate files joined on `(chrom, pos, ref, alt)`.
+
+### 5.1 Each variant gets exactly one row in `cohort.variants.tsv`
+
+Regardless of how many samples carry it. The pipeline deduplicates twice:
+
+1. **Stage 2** (cohort merge) dedupes on `(chrom, pos, ref, alt, transcript)`. If three
+   samples have the same variant on the same transcript, only one annotation row survives.
+   Annotations (consequence, AlphaMissense score, gene constraint, etc.) are properties of
+   the variant itself, not the carrier, so duplication would just waste storage.
+2. **Stage 4** (`tier_variants.R`) collapses across transcripts to one row per
+   `(chrom, pos, ref, alt)`. The chosen transcript is MANE Select where available,
+   otherwise canonical.
+
+For a 209-sample cohort the final file has ~624k rows even though the source per-sample
+VCFs contain millions of variant–sample observations in aggregate.
+
+### 5.2 What's per-variant vs per-sample vs aggregated
+
+| Information | Where it lives | Per what |
+|-------------|----------------|----------|
+| Variant annotation (consequence, AM, ESM1b, LOEUF, pLI, ClinVar, ...) | `cohort.variants.tsv` | per variant |
+| Tier + tier_reason + modifier flag | `cohort.variants.tsv` | per variant |
+| Carrier counts (`n_carriers`, `n_het`, `n_hom`) | `cohort.variants.tsv` | per variant (aggregated across samples) |
+| Cohort allele counts (`cohort_ac`, `cohort_an`, `cohort_af`) | `cohort.variants.tsv` | per variant (aggregated) |
+| Which specific samples carry which variant + their genotype | `cohort.genotypes.tsv` | per (variant, sample) |
+| Per-gene rollups (n_tier1, n_samples_tier1, ...) | `cohort.genes.tsv` | per gene (aggregated) |
+
+So a variant carried by 5 samples (3 het, 2 hom alt) gets:
+- **1 row** in `cohort.variants.tsv` with `n_carriers=5, n_het=3, n_hom=2, cohort_ac=7, cohort_an=418, cohort_af≈0.0167`
+- **5 rows** in `cohort.genotypes.tsv`, one per carrier with that carrier's sample ID and genotype
+- contribution to the gene's `n_tier1` / `n_samples_tier1` / etc. counts in `cohort.genes.tsv`
+
+### 5.3 The `sample` column in `cohort.variants.tsv` is NOT meaningful
+
+This column is inherited from the per-sample annotation tables produced by
+`csq_to_wide_tab.py`. After the Stage 2 dedupe it holds whichever single sample's row
+happened to win the deduplication (first occurrence) — it does **not** identify the
+carrier(s) of a multi-sample variant. Use `n_carriers` for "how many samples have this
+variant" and join to `cohort.genotypes.tsv` for "which samples specifically".
+
+### 5.4 Joining variants to samples
+
+The join key is `(chrom, pos, ref, alt)` in both files. A few common patterns:
+
+**Get all samples carrying a specific variant:**
+
+```bash
+awk -F'\t' '$1=="17" && $2=="31196120" && $3=="C" && $4=="T" {print $5, $6}' \
+    cohort.genotypes.tsv
+```
+
+**For every Tier 1 NF1 variant, list the carrier samples and their genotypes:**
+
+```bash
+# Step 1: emit (key, tier_reason) pairs for Tier 1 NF1 variants
+awk -F'\t' '
+  NR==1 { for (i=1;i<=NF;i++) c[$i]=i; next }
+  $c["gene"]=="NF1" && $c["tier"]==1 {
+    print $c["chrom"]"_"$c["pos"]"_"$c["ref"]"_"$c["alt"] "\t" $c["tier_reason"]
+  }
+' cohort.variants.tsv | sort > tier1_nf1.keys
+
+# Step 2: emit (key, sample, gt) from genotypes
+awk -F'\t' '{ print $1"_"$2"_"$3"_"$4 "\t" $5 "\t" $6 }' \
+    cohort.genotypes.tsv | sort > genotypes.keys
+
+# Step 3: join
+join -t $'\t' tier1_nf1.keys genotypes.keys
+```
+
+The same pattern (variant key + sort + join) works for any tier subset.
+
+**Get the sample list for every Tier 1 variant in a single command** (no sorting needed if
+the genotypes file is small enough to hash in memory — for 209 samples this is fine on
+modest RAM if you first filter the variants table):
+
+```r
+library(data.table)
+v  <- fread("cohort.variants.tsv")[tier == 1L]
+gt <- fread("cohort.genotypes.tsv",
+            col.names = c("chrom","pos","ref","alt","sample","gt"))
+v_keys <- v[, .(chrom = as.character(chrom), pos = as.integer(pos),
+                ref, alt, gene, tier_reason)]
+gt[, chrom := as.character(chrom)]
+joined <- merge(v_keys, gt, by = c("chrom","pos","ref","alt"))
+# joined now has one row per (Tier 1 variant, carrier sample) pair
+```
+
+For larger filters (e.g., all Tier 1+2 ≈ 130k variants), the awk-stream pattern is
+faster and avoids loading the 32 GB genotype file into R.
+
+---
+
+## 6. Reading recipes
 
 ### "Show me the strongest NF1 candidates"
 
@@ -309,7 +407,7 @@ awk -F'\t' '
 
 ---
 
-## 6. Where to read more
+## 7. Where to read more
 
 | Question | See |
 |----------|-----|
