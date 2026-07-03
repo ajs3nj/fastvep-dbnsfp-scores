@@ -171,21 +171,20 @@ else
             # synapse get downloads with the entity's native filename into a
             # target directory; we then rename to the sample_id-based path so
             # downstream stages find it at a predictable location.
-            local syn_id="${url#syn://}"
-            local tmp_dl
+            # NOTE: this whole block runs inside a `while` loop (not a
+            # function), so we can't use `local`. Regular variables here.
+            syn_id="${url#syn://}"
             tmp_dl=$(mktemp -d "$BATCH_DIR_VCF/.dl.$sid.XXXXXX")
             if ! synapse get "$syn_id" --downloadLocation "$tmp_dl" >/dev/null; then
               rm -rf "$tmp_dl"
               die "synapse get failed for $sid ($url) -- check SYNAPSE_AUTH_TOKEN and entity permissions"
             fi
-            local downloaded
             downloaded=$(find "$tmp_dl" -maxdepth 1 -type f \( -name '*.vcf.gz' -o -name '*.vcf.bgz' -o -name '*.vcf' \) | head -1)
             [[ -n "$downloaded" ]] || die "synapse get for $sid returned no VCF-shaped file: $(ls "$tmp_dl")"
             mv "$downloaded" "$out"
             # Bring the .tbi along if Synapse stored it too (many Synapse
             # projects store index files as separate entities, in which case
             # tabix is re-created after Stage 0 normalization anyway).
-            local idx
             idx=$(find "$tmp_dl" -maxdepth 1 -type f -name '*.tbi' | head -1)
             [[ -n "$idx" ]] && mv "$idx" "$out.tbi"
             rm -rf "$tmp_dl"
