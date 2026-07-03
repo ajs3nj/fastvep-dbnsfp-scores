@@ -104,16 +104,48 @@ log "input: $INPUT  ($input_style chroms)"
 log "fasta: $FASTA  ($fasta_style chroms)"
 [[ -n "$CHR_REMAP" ]] && log "chr remap: $CHR_REMAP"
 
+# Filter to primary assembly contigs (1-22, X, Y, MT). Alt/random/decoy
+# contigs (chr1_KI270706v1_random, chrUn_*, chr*_alt, chrEBV, decoy, etc.)
+# aren't in the primary-assembly FASTA, so bcftools norm can't look them
+# up and fails. NF1-relevant loci are all on the primary chroms so this
+# is a lossless filter for our analysis. Runs BEFORE norm so norm only
+# sees contigs it can resolve.
+#
+# Pipeline order matters:
+#   1. bcftools annotate --rename-chrs   chr1 -> 1, etc.
+#   2. awk filter                        drop non-primary contig records
+#                                        AND their ##contig= header lines
+#   3. bcftools norm -m- -f FASTA        left-anchor indels, split multi-allelic
 if [[ -n "$CHR_REMAP" ]]; then
-  # Rename FIRST, then normalize. bcftools norm -f FASTA needs the contig
-  # names in the VCF to match the FASTA index -- if we run norm before
-  # renaming, it looks up "chr1" against an Ensembl-style FASTA and fails
-  # with "faidx_fetch_seq failed at chr1:NNN". Correct order is
-  # annotate --rename-chrs -> norm.
-  bcftools annotate --rename-chrs "$CHR_REMAP" -Ou "$INPUT" 2> "$tmp/norm.log" \
+  bcftools annotate --rename-chrs "$CHR_REMAP" -Ov "$INPUT" 2> "$tmp/norm.log" \
+    | awk 'BEGIN { FS = OFS = "\t" }
+        # ##contig=<ID=xxx,...>  header lines -- keep only primary contigs
+        /^##contig=<ID=/ {
+          match($0, /ID=[^,>]+/)
+          chrom = substr($0, RSTART + 3, RLENGTH - 3)
+          if (chrom ~ /^([0-9]+|X|Y|MT)$/) print
+          next
+        }
+        # Other header lines pass through
+        /^#/ { print; next }
+        # Data lines: keep only primary chroms
+        $1 ~ /^([0-9]+|X|Y|MT)$/ { print }
+      ' \
     | bcftools norm -m- -f "$FASTA" -Oz -o "$OUTPUT" - 2>> "$tmp/norm.log"
 else
-  bcftools norm -m- -f "$FASTA" -Oz -o "$OUTPUT" "$INPUT" 2> "$tmp/norm.log"
+  # No rename needed -- but still filter non-primary contigs for the same reason.
+  bcftools view -Ov "$INPUT" 2> "$tmp/norm.log" \
+    | awk 'BEGIN { FS = OFS = "\t" }
+        /^##contig=<ID=/ {
+          match($0, /ID=[^,>]+/)
+          chrom = substr($0, RSTART + 3, RLENGTH - 3)
+          if (chrom ~ /^([0-9]+|X|Y|MT)$/) print
+          next
+        }
+        /^#/ { print; next }
+        $1 ~ /^([0-9]+|X|Y|MT)$/ { print }
+      ' \
+    | bcftools norm -m- -f "$FASTA" -Oz -o "$OUTPUT" - 2>> "$tmp/norm.log"
 fi
 
 tabix -p vcf -f "$OUTPUT"
