@@ -105,8 +105,13 @@ log "fasta: $FASTA  ($fasta_style chroms)"
 [[ -n "$CHR_REMAP" ]] && log "chr remap: $CHR_REMAP"
 
 if [[ -n "$CHR_REMAP" ]]; then
-  bcftools norm -m- -f "$FASTA" -Ou "$INPUT" 2> "$tmp/norm.log" \
-    | bcftools annotate --rename-chrs "$CHR_REMAP" -Oz -o "$OUTPUT" - 2>> "$tmp/norm.log"
+  # Rename FIRST, then normalize. bcftools norm -f FASTA needs the contig
+  # names in the VCF to match the FASTA index -- if we run norm before
+  # renaming, it looks up "chr1" against an Ensembl-style FASTA and fails
+  # with "faidx_fetch_seq failed at chr1:NNN". Correct order is
+  # annotate --rename-chrs -> norm.
+  bcftools annotate --rename-chrs "$CHR_REMAP" -Ou "$INPUT" 2> "$tmp/norm.log" \
+    | bcftools norm -m- -f "$FASTA" -Oz -o "$OUTPUT" - 2>> "$tmp/norm.log"
 else
   bcftools norm -m- -f "$FASTA" -Oz -o "$OUTPUT" "$INPUT" 2> "$tmp/norm.log"
 fi
