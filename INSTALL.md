@@ -25,6 +25,9 @@ WGS run; 256 GB recommended). All dependencies are open-source and conda-install
 | GNU parallel OR xargs | recent | Per-sample annotation parallelism |
 | tabix / bgzip | htslib 1.18+ | VCF indexing |
 | awk (gawk) | 4.x+ | Cohort merge and Stage 3.5 aggregation. Mawk works but gawk is preferred for `SUBSEP` semantics |
+| synapseclient (Python pkg) | 4.x+ | Only if manifest has `syn*` URLs. `pip install synapseclient`. Requires `SYNAPSE_AUTH_TOKEN` env var or `~/.synapseConfig` (see §4.4) |
+| aws-cli | 2.x+ | Only if manifest has `s3://` URLs |
+| gcloud (Google Cloud SDK) | recent | Only if manifest has `gs://` URLs |
 
 ### Reference data
 
@@ -101,36 +104,164 @@ fastvep-dbnsfp-scores/
 
 ## 4. Cohort manifest format
 
-The pipeline takes a TSV manifest of `(sample_id, vcf_path)` rows. Header required.
+### 4.1 v2 manifest (recommended, batched)
+
+The v2 pipeline reads a TSV manifest that supports remote VCF URLs and per-sample
+metadata. Header required.
 
 ```tsv
-sample_id	vcf_path
-NG1F9ZXJ42	/data/nf1/inputs/batch1/NG1F9ZXJ42.vcf.gz
-NG1CEFH8R3	/data/nf1/inputs/batch1/NG1CEFH8R3.vcf.gz
+sample_id	batch_id	vcf_url	ancestry	severity	family_id	coverage	contamination	qc_pass
+NG104C2PK8	1	s3://nf-cohort/raw/NG104C2PK8.vcf.gz	AFR	3.2	FAM-001	32.5	0.012	TRUE
+NG1JSQFDDW	1	s3://nf-cohort/raw/NG1JSQFDDW.vcf.gz	NFE	4.1	FAM-002	31.8	0.008	TRUE
+NG18TID2K1	2	s3://nf-cohort/raw/NG18TID2K1.vcf.gz	EAS	3.8	FAM-005	31.2	0.011	TRUE
 ...
 ```
 
-VCFs must be:
-- bgzipped + tabix-indexed (`.vcf.gz` + `.vcf.gz.tbi`)
-- Aligned to GRCh38 (Ensembl-style chromosome names: `1`, `2`, ..., `X`, `Y`, `MT`)
-- Per-sample (joint-called multi-sample VCFs also work; see notes in `cohort_pipeline.sh`)
+Required columns:
+- `sample_id` — unique per row
+- `batch_id` — samples in the same batch are downloaded, annotated, and cleaned
+  up as a unit. Recommended batch size: 50 samples. Optional: if the column is
+  missing entirely, all samples are treated as batch 1.
+- Either `vcf_url` (for `s3://`, `gs://`, `http://`, `https://`, `ftp://`) OR
+  `vcf_path` (local filesystem, symlinked into place — no download)
 
-**Chromosome naming.** If your VCFs use UCSC-style names (`chr1`, `chrX`), they must
-be renamed to Ensembl-style before annotation. The pipeline includes an upfront check
-that fails fast on mismatch. Use:
+Optional metadata columns (recommended):
+- `ancestry` — self-reported major group (AFR / AMR / ASJ / EAS / FIN / NFE /
+  SAS / OTH). Enables ancestry-stratified popmax + cohort_af if provided.
+- `severity` — numeric phenotype-severity score (any scale)
+- `family_id` — samples sharing a family_id are treated as related in downstream analyses
+- `coverage`, `contamination`, `qc_pass` — sample-level QC metrics; used for
+  the sample-level QC report in the provenance log
 
-```bash
-bcftools annotate --rename-chrs chr_remap.tsv input.vcf.gz -Oz -o input.renamed.vcf.gz
+See `scripts/cohort.manifest.v2.example.tsv` for a full template.
+
+### 4.2 v1 manifest (legacy, single-batch)
+
+The original v1 format used only `sample_id` and `vcf_path`. Still supported by
+`scripts/cohort_pipeline.sh` for single-batch runs; the v2 batched orchestrator
+tolerates it too (all samples go into implicit batch 1, no download step).
+
+### 4.3 Downloading VCFs from Synapse
+
+If your cohort's VCFs live on [Synapse](https://www.synapse.org) (Sage Bionetworks'
+data platform), put the Synapse entity ID directly in the `vcf_url` column.
+
+**Manifest format:**
+
+```tsv
+sample_id	batch_id	vcf_url	ancestry	...
+NG104C2PK8	1	syn12345678	AFR	...
+NG1JSQFDDW	1	syn12345679	NFE	...
 ```
 
-`chr_remap.tsv` is a 2-column TSV: `chr1\t1`, `chr2\t2`, etc. (See
-`scripts/chr_remap.example.tsv`.)
+Both `syn12345678` and `syn://syn12345678` are accepted.
+
+**Authentication.** The Synapse Python client (used under the hood by
+`synapse get`) needs credentials before it can download. Two options, in
+order of preference for automated pipelines:
+
+**(A) Environment variable (preferred for automated runs)** — generate a
+Personal Access Token at https://www.synapse.org/#!PersonalAccessTokens
+with `Download` scope, then export it before running the pipeline:
+
+```bash
+export SYNAPSE_AUTH_TOKEN='<your token here>'
+scripts/cohort_pipeline_batched.sh --manifest ... --out-dir ...
+```
+
+Store the token in a secrets manager, not in your shell history; add
+`.env` files to `.gitignore` if you use them.
+
+**(B) ~/.synapseConfig (interactive / dev machines)** — run
+`synapse login -p <username>` once to write the config file. The download
+loop will find it automatically. Not recommended for shared compute
+because the token lives on disk in plaintext.
+
+**Access control.** Confirm your Synapse account has been granted download
+access to the study's parent project *before* starting the run. The v2
+orchestrator only knows to fail when the first sample errors — a permission
+issue caught 400 samples in is expensive.
+
+**Rate limiting and retries.** `synapse get` is single-threaded per invocation
+and Synapse rate-limits aggressive downloaders. The batched orchestrator
+downloads samples serially within a batch by default. If a download fails
+mid-batch, the state sentinel for that batch's `downloaded` stage is NOT
+written, so a rerun retries the whole batch's download step (already-present
+files skip cheaply). Persistent failures usually mean an auth problem or a
+Synapse-side outage; check the sample's Synapse page in a browser.
+
+**Index files.** Synapse projects sometimes store `.tbi` index files as
+separate entities. The download step will pull the `.tbi` alongside the VCF
+if `synapse get` returns both; if only the VCF is retrieved, Stage 0's
+`tabix -p vcf -f` recreates the index during normalization.
+
+### 4.4 VCF requirements
+
+VCFs must be:
+- bgzipped + tabix-indexed (`.vcf.gz` + `.vcf.gz.tbi`) — download step will
+  index if the URL points at an unindexed file
+- Aligned to GRCh38
+- Per-sample (joint-called multi-sample VCFs also work; see notes in the
+  pipeline script)
+
+**Chromosome naming and indel encoding** are handled by Stage 0 (`bcftools
+norm -m- -f FASTA` + optional `--chr-remap`), which runs inside every batch
+before fastVEP annotation. Provide `scripts/chr_remap.example.tsv` (or a
+custom map) if your input VCFs use UCSC-style chrom names (`chr1`) and your
+downstream tools expect Ensembl-style (`1`).
 
 ---
 
 ## 5. Running the cohort pipeline
 
-End-to-end:
+### 5.1 v2 batched invocation (recommended)
+
+For a ~500-sample cohort where disk cannot hold all raw VCFs simultaneously:
+
+```bash
+scripts/cohort_pipeline_batched.sh \
+    --manifest        manifest.v2.tsv \
+    --out-dir         /path/to/results \
+    --data-dir        /path/to/data \
+    --sa-dir          /path/to/sa \
+    --cache           /path/to/grch38_115.fvcache \
+    --fasta           /path/to/Homo_sapiens.GRCh38.dna.primary_assembly.fa \
+    --chr-remap       scripts/chr_remap.example.tsv \
+    --threads         16 \
+    --modifier-genes  R/nf_modifier_genes.txt \
+    --af-max          1e-4 \
+    --filter-af       0.01 \
+    --loftee --loftee-dir /path/to/loftee \
+    --vep-cache /path/to/vep_cache
+```
+
+Batching works by looping over distinct `batch_id` values from the manifest.
+For each batch:
+
+1. **Download** VCFs into `$OUT_DIR/inputs/batch_<N>/`
+2. **Stage 0 normalize** — `bcftools norm -m- -f FASTA` + chrom rename → `$OUT_DIR/normalized/batch_<N>/`
+3. **Stage 1a annotate** — fastvep + csq_to_wide_tab.py → `$OUT_DIR/per_sample/<sample>.annotated.tab.gz`
+4. **Stage 1b genotypes** — `bcftools query` → `$OUT_DIR/per_sample/<sample>.genotypes.tsv`
+5. **(Optional) Stage 1c LOFTEE** — VEP+LOFTEE plugin pass; re-writes the wide tab with `loftee_lof` populated
+6. **Stage 0z cleanup** — deletes `inputs/`, `normalized/`, `annotated/` for
+   this batch after verifying every sample produced both a non-empty
+   `annotated.tab.gz` and `genotypes.tsv`
+
+After all batches finish, cohort stages 2–5 run once against the cumulative
+`per_sample/` directory (Stage 2 merge, Stage 3 pre-filter, Stage 3.5 cohort
+summary + genotypes, Stage 4 R tier, Stage 5 per-gene burden).
+
+**Resumability:** killing the pipeline mid-run and restarting picks up where
+it left off. State sentinels under `$OUT_DIR/state/` mark completed
+stage-per-batch pairs. Force-retry a single batch with `--retry-batch <N>`;
+process just one batch and stop with `--only-batch <N>`.
+
+**Peak disk per batch** (50 samples, ~30 GB VCFs): ~1.5 TB. Cumulative
+annotated tabs across all batches: ~100 GB for 500 samples.
+
+### 5.2 v1 non-batched invocation (legacy)
+
+For small cohorts (<100 samples) or when all VCFs already live on local disk:
 
 ```bash
 scripts/cohort_pipeline.sh \

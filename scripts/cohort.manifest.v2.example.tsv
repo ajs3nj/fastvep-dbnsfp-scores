@@ -1,0 +1,19 @@
+# vcf_url accepts:
+#   s3://bucket/key.vcf.gz
+#   gs://bucket/key.vcf.gz
+#   https://.../file.vcf.gz
+#   ftp://.../file.vcf.gz
+#   syn12345678               (Synapse entity ID; requires SYNAPSE_AUTH_TOKEN, see INSTALL.md §4.3)
+#   syn://syn12345678         (same, explicit scheme)
+# You can also use a local vcf_path column instead of vcf_url; the pipeline symlinks rather than downloads.
+sample_id	batch_id	vcf_url	ancestry	severity	family_id	coverage	contamination	qc_pass
+NG104C2PK8	1	s3://nf-cohort/raw/NG104C2PK8.vcf.gz	AFR	3.2	FAM-001	32.5	0.012	TRUE
+NG1JSQFDDW	1	s3://nf-cohort/raw/NG1JSQFDDW.vcf.gz	NFE	4.1	FAM-002	31.8	0.008	TRUE
+NG1F9ZXJ42	1	s3://nf-cohort/raw/NG1F9ZXJ42.vcf.gz	NFE	5.0	FAM-003	30.9	0.015	TRUE
+NG17UM0MW0	1	s3://nf-cohort/raw/NG17UM0MW0.vcf.gz	AMR	2.7	FAM-004	33.1	0.009	TRUE
+NG18TID2K1	2	s3://nf-cohort/raw/NG18TID2K1.vcf.gz	EAS	3.8	FAM-005	31.2	0.011	TRUE
+NG1BSCWKKU	2	s3://nf-cohort/raw/NG1BSCWKKU.vcf.gz	AFR	4.3	FAM-006	32.0	0.013	TRUE
+NG1DVNMVGL	2	s3://nf-cohort/raw/NG1DVNMVGL.vcf.gz	NFE	3.1	FAM-007	31.5	0.010	TRUE
+NG1GHT7589	3	s3://nf-cohort/raw/NG1GHT7589.vcf.gz	SAS	2.9	FAM-008	30.7	0.014	TRUE
+NG1KD3QPZH	3	s3://nf-cohort/raw/NG1KD3QPZH.vcf.gz	NFE	4.7	FAM-009	32.8	0.007	TRUE
+NG1TQU7LPU	3	s3://nf-cohort/raw/NG1TQU7LPU.vcf.gz	AFR	3.5	FAM-010	31.9	0.012	TRUE
