@@ -118,7 +118,12 @@ read_header() {
     esac
     i=$((i+1))
   done
-  [[ -z "${COL_SAMPLE:-}" ]] && die "manifest missing 'sample_id' column"
+  # Note: use `if` here rather than `[[ ... ]] && die` because the latter
+  # returns 1 when the condition is false (the common case), which then
+  # bubbles up as the function's exit status and set -e kills the caller.
+  if [[ -z "${COL_SAMPLE:-}" ]]; then
+    die "manifest missing 'sample_id' column"
+  fi
 }
 read_header
 
