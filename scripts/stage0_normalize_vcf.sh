@@ -77,7 +77,22 @@ fi
 
 mkdir -p "$(dirname "$OUTPUT")"
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+# On failure, preserve the tmp dir + its norm.log so the caller can see the
+# actual bcftools error message. On success, clean up as usual.
+cleanup() {
+  local status=$?
+  if [[ $status -ne 0 ]]; then
+    echo "[stage0] FAILED (exit $status) -- preserving bcftools log at $tmp/norm.log" >&2
+    if [[ -s "$tmp/norm.log" ]]; then
+      echo "----- $tmp/norm.log (last 20 lines) -----" >&2
+      tail -20 "$tmp/norm.log" >&2
+      echo "----- end -----" >&2
+    fi
+  else
+    rm -rf "$tmp"
+  fi
+}
+trap cleanup EXIT
 
 # Pipeline:
 #   1. bcftools norm -m- -f FASTA : split multi-allelic, left-anchor indels
