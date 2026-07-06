@@ -218,6 +218,15 @@ done
 # Compare the chromosome naming convention of the first VCF against the FASTA.
 # If they don't match, fastvep produces all-intergenic CSQ output silently and
 # the entire cohort run is wasted. Fail fast with a clear remediation message.
+#
+# Skip entirely when --skip-annotate is set: the check exists to catch a
+# problem that only manifests during Stage 1 annotation, and when we're
+# re-running just Stages 2-5 (e.g. via run_cohort_stages.sh with a synthesized
+# v1 manifest) the "first VCF" in the manifest may be a dummy path that
+# doesn't reflect the real source data.
+if [[ "$SKIP_ANNOTATE" == "1" ]]; then
+  log "  ⓘ skipping chromosome-naming check (--skip-annotate is set)"
+else
 first_vcf=$(tail -n+2 "$MANIFEST" | awk -F'\t' 'NR==1 {print $2; exit}')
 vcf_chrom=$(zcat -f "$first_vcf" 2>/dev/null | awk '!/^#/ {print $1; exit}')
 fasta_chrom=$(grep '^>' "$FASTA" 2>/dev/null | head -1 | sed 's/^>//' | awk '{print $1}')
@@ -246,6 +255,7 @@ elif [[ "$vcf_chr" != "$fasta_chr" ]]; then
 else
   log "  ✓ chromosome naming consistent (VCF='$vcf_chrom' FASTA='$fasta_chrom')"
 fi
+fi   # end: skip chrom-naming check when --skip-annotate
 
 log "Threads: $THREADS"
 log "Pre-filter AF threshold: $FILTER_AF (gnomAD popmax)"
