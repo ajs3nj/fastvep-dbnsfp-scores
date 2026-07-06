@@ -21,8 +21,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Extract --manifest value from args (needed for the format bridge)
+# Extract --manifest and --out-dir values from args. We need both for the
+# format bridge -- --manifest to translate, --out-dir to build the dummy
+# vcf_path values that point into the actual per_sample/ dir.
 manifest_in=""
+out_dir=""
 have_skip=0
 have_manifest_flag=0
 new_args=()
@@ -33,6 +36,11 @@ while [[ $i -lt ${#args[@]} ]]; do
     --manifest)
       manifest_in="${args[$((i+1))]}"
       have_manifest_flag=1
+      i=$((i+2))
+      ;;
+    --out-dir)
+      out_dir="${args[$((i+1))]}"
+      new_args+=("${args[$i]}" "${args[$((i+1))]}")
       i=$((i+2))
       ;;
     --skip-annotate)
@@ -62,7 +70,7 @@ if [[ -n "$manifest_in" ]]; then
     # v2 format -- translate to a temp v1 manifest with dummy vcf_path
     tmp_manifest=$(mktemp --tmpdir cohort_manifest_v1.XXXXXX.tsv)
     trap 'rm -f "$tmp_manifest"' EXIT
-    awk -F'\t' -v OFS='\t' '
+    awk -F'\t' -v OFS='\t' -v out_dir="$out_dir" '
       NR == 1 {
         for (i=1;i<=NF;i++) c[$i] = i
         if (!("sample_id" in c)) {
@@ -73,9 +81,13 @@ if [[ -n "$manifest_in" ]]; then
         next
       }
       # Emit sample_id + a dummy path. With --skip-annotate the path is
-      # never opened; it just needs to be non-empty for cohort_pipeline.sh
-      # to be happy.
-      { print $c["sample_id"], "/dev/null" }
+      # never opened for annotation, but cohort_pipeline.sh does an upfront
+      # chromosome-naming check that reads $2 of the first data row and
+      # zcat-checks the first non-header chrom in it. Point at the already-
+      # produced per_sample wide tab -- gzipped, first data row starts with
+      # an Ensembl-style chrom (1, 2, ...), never gets opened for anything
+      # else because Stage 1 is skipped.
+      { print $c["sample_id"], out_dir "/per_sample/" $c["sample_id"] ".annotated.tab.gz" }
     ' "$manifest_in" > "$tmp_manifest"
     new_args+=(--manifest "$tmp_manifest")
     echo "[run_cohort_stages] translated v2 manifest -> $tmp_manifest" >&2
