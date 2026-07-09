@@ -116,7 +116,12 @@ main <- function() {
   v[, af_source_canonical := factor(af_source_canonical,
                                      levels = SOURCE_ORDER)]
 
-  af_num <- suppressWarnings(as.numeric(v$af_used))
+  # Attach af_num as a column so data.table by-group aggregations correctly
+  # subset it per group. If we left af_num as an external vector, the
+  # aggregation would use the whole vector for every group and every source
+  # would show the same min/median/max af_used.
+  v[, af_num := suppressWarnings(as.numeric(af_used))]
+
   summary_dt <- v[, .(
       n_variants   = .N,
       pct_of_total = .N / nrow(v) * 100,
@@ -160,14 +165,20 @@ main <- function() {
                              as.numeric(af_max_effective)], na.rm = TRUE))
   } else NA_real_
 
-  # Total counts per source for legend annotations
-  legend_lbl <- summary_dt[, .(af_source,
-                               lbl = sprintf("%s (n=%s, %.1f%%)",
-                                             SOURCE_LABELS[as.character(af_source)],
-                                             comma(n_variants),
-                                             pct_of_total))]
-  # Build a named vector for scale_fill_manual labels
-  fill_labels <- setNames(legend_lbl$lbl, as.character(legend_lbl$af_source))
+  # Build legend labels for EVERY SOURCE_ORDER entry, not just observed ones.
+  # scale_fill_manual requires breaks and labels to have equal length, and
+  # `breaks = SOURCE_ORDER` includes all 5 categories even when 3 of them are
+  # absent from this run. Zero-count sources get "n=0" in the label so the
+  # legend documents what's missing.
+  obs_by_source <- setNames(summary_dt$n_variants,
+                             as.character(summary_dt$af_source))
+  obs_pct       <- setNames(summary_dt$pct_of_total,
+                             as.character(summary_dt$af_source))
+  fill_labels <- vapply(SOURCE_ORDER, function(src) {
+    n   <- obs_by_source[src]; if (is.na(n))   n   <- 0
+    pct <- obs_pct[src];        if (is.na(pct)) pct <- 0
+    sprintf("%s (n=%s, %.1f%%)", SOURCE_LABELS[src], comma(n), pct)
+  }, character(1))
 
   # X-axis: log10 range from -6 to 0, plus NA bin at -6.5
   x_breaks <- c(na_marker, -6, -5, -4, -3, -2, -1, 0)
