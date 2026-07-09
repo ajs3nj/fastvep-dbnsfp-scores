@@ -217,12 +217,36 @@ collapse_to_variant <- function(dt) {
 add_evidence <- function(v) {
   C <- COLS
 
-  # Rarity: prefer FAF, fall back to popmax, fall back to overall gnomAD.
-  faf  <- num_col(v, C$gnomad_faf)
-  pmax <- num_col(v, C$gnomad_popmax_af)
-  af   <- num_col(v, C$gnomad_af)
-  af_used <- ifelse(!is.na(faf), faf, ifelse(!is.na(pmax), pmax, af))
-  v[, af_used := af_used]
+  # Rarity: prefer FAF, fall back to popmax, fall back to overall gnomAD,
+  # fall back to cohort_af when all gnomAD sources are missing.
+  #
+  # The cohort_af fallback matters when the fastvep annotation pipeline lacks
+  # a per-variant gnomAD AF supplementary source (only gene-level constraint
+  # is loaded). In that case ALL variants would silently get af_used = NA,
+  # the rarity gate would treat everything as rare (via the is.na fallback),
+  # and Tier 1 would inflate massively while the modifier band never fires.
+  #
+  # cohort_af is not a perfect substitute -- it misses variants that are
+  # common globally but rare in cohort -- but it's a much better honest
+  # proxy than treating everything as rare. Provenance is captured in the
+  # `af_source` column so downstream can see which fallback was used per
+  # variant.
+  faf   <- num_col(v, C$gnomad_faf)
+  pmax  <- num_col(v, C$gnomad_popmax_af)
+  af    <- num_col(v, C$gnomad_af)
+  cohaf <- if ("cohort_af" %in% names(v)) num_col(v, "cohort_af") else rep(NA_real_, nrow(v))
+
+  af_used <- ifelse(!is.na(faf),  faf,
+             ifelse(!is.na(pmax), pmax,
+             ifelse(!is.na(af),   af,
+             ifelse(!is.na(cohaf), cohaf, NA_real_))))
+  af_source <- ifelse(!is.na(faf),  "gnomad_faf",
+               ifelse(!is.na(pmax), "gnomad_popmax_af",
+               ifelse(!is.na(af),   "gnomad_af",
+               ifelse(!is.na(cohaf), "cohort_af (gnomAD sources missing)",
+                                     "none"))))
+  v[, af_used   := af_used]
+  v[, af_source := af_source]
   v[, rare := is.na(af_used) | af_used <= CFG$af_max]
 
   v[, is_lof := variant_class == "pLoF"]
