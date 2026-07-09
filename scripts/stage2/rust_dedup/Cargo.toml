@@ -1,0 +1,20 @@
+[package]
+name = "dedup_one_chrom"
+version = "0.1.0"
+edition = "2021"
+description = "Per-chromosome cohort dedup for v3 Stage 2. Reads gzipped per-sample wide-tab shards, emits unique variant-transcript rows with n_samples_annotated attached."
+license = "MIT"
+
+[dependencies]
+# Fast decompression -- multi-threaded gzip decoder from flate2 backed by miniz_oxide
+flate2 = "1.0"
+# FxHashMap/FxHashSet: 3-5x faster than std HashMap for our small-integer / short-string keys
+rustc-hash = "1.1"
+# Ergonomic error handling
+anyhow = "1.0"
+
+[profile.release]
+# Aggressive perf settings -- this binary is CPU-bound in the dedup hot loop
+opt-level = 3
+lto = "fat"
+codegen-units = 1
