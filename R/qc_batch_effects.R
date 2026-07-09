@@ -128,10 +128,13 @@ fig_batch_burden <- function(d, label, cohort_name, out_path, kw_p = NA_real_) {
     order(-med), batch]
   d[, batch := factor(batch, levels = as.character(order_batches))]
 
+  # Explicit as.numeric() -- see the sum_stats() note in main(). quantile /
+  # median over integer input can return either type across groups, breaking
+  # the by-group rbind with a type-consistency error.
   n_by_batch <- d[, .(n_samples = .N,
-                      median   = median(n),
-                      q10      = quantile(n, 0.10),
-                      q90      = quantile(n, 0.90)),
+                      median   = as.numeric(median(n)),
+                      q10      = as.numeric(quantile(n, 0.10)),
+                      q90      = as.numeric(quantile(n, 0.90))),
                   by = batch]
 
   # Cap x-axis label lines at ~20 chars (long batch names wrap otherwise)
@@ -204,9 +207,32 @@ main <- function() {
                ref   = as.character(ref),
                alt   = as.character(alt))]
 
-  ps_t1 <- per_sample_carrier_count(v_t1, opt$genotypes, "Tier 1")
-  ps_hi <- per_sample_carrier_count(v_hi, opt$genotypes,
-                                    sprintf("Tier 1..%d", opt$tier_max))
+  # Checkpoint per-sample carrier counts. The awk streams over 3+ B rows of
+  # cohort.genotypes.tsv and takes 30-60 min at cohort scale. If anything
+  # downstream (aggregation, plotting) fails, we don't want to re-stream --
+  # the intermediates are tiny (~n_samples rows) and cheap to persist. If the
+  # cached files exist AND the tier-key sets haven't changed size, reuse them.
+  ck_t1 <- file.path(opt$out_dir, "qc_ck_ps_t1.tsv")
+  ck_hi <- file.path(opt$out_dir, sprintf("qc_ck_ps_t1_%d.tsv", opt$tier_max))
+
+  load_or_stream <- function(v_keys, gt_path, label, ck_path) {
+    if (file.exists(ck_path) && file.size(ck_path) > 0) {
+      cached <- fread(ck_path, sep = "\t")
+      if (nrow(cached) > 0 &&
+          "n" %in% names(cached) && "sample" %in% names(cached)) {
+        message(sprintf("[qc] reusing cached carrier counts for %s -> %s",
+                        label, ck_path))
+        return(cached)
+      }
+    }
+    ps <- per_sample_carrier_count(v_keys, gt_path, label)
+    fwrite(ps, ck_path, sep = "\t")
+    message(sprintf("[qc] cached %s carrier counts -> %s", label, ck_path))
+    ps
+  }
+  ps_t1 <- load_or_stream(v_t1, opt$genotypes, "Tier 1", ck_t1)
+  ps_hi <- load_or_stream(v_hi, opt$genotypes,
+                          sprintf("Tier 1..%d", opt$tier_max), ck_hi)
 
   # Join to manifest for batch labels. Left-join on manifest so samples in
   # manifest but missing from genotypes get flagged (n=NA -> drop with a
@@ -225,16 +251,21 @@ main <- function() {
   d_hi <- merge_burden(ps_hi, sprintf("Tier 1..%d", opt$tier_max))
 
   # ---------- summary table ---------------------------------------------------
+  # Coerce every stat to numeric explicitly. median() / quantile() / min() /
+  # max() over an integer vector can return integer OR double depending on
+  # whether the result lands exactly on an existing value or interpolates.
+  # Across 7 batches you get mixed types per column, and data.table's rbind
+  # refuses to combine groups with inconsistent column types.
   sum_stats <- function(d, label) {
     d[, .(analysis  = label,
           n_samples = .N,
-          median    = median(n),
+          median    = as.numeric(median(n)),
           mean      = round(mean(n), 1),
           sd        = round(sd(n), 1),
-          q10       = quantile(n, 0.10),
-          q90       = quantile(n, 0.90),
-          min       = min(n),
-          max       = max(n)),
+          q10       = as.numeric(quantile(n, 0.10)),
+          q90       = as.numeric(quantile(n, 0.90)),
+          min       = as.numeric(min(n)),
+          max       = as.numeric(max(n))),
       by = .(batch)]
   }
   summary_dt <- rbindlist(list(
@@ -297,8 +328,9 @@ main <- function() {
   # ---------- outlier samples --------------------------------------------------
   # Standard Tukey outlier definition per batch, applied on Tier 1+..tier_max
   # (more variants -> more stable IQR).
-  d_hi[, iqr := quantile(n, 0.75) - quantile(n, 0.25), by = batch]
-  d_hi[, q75 := quantile(n, 0.75), by = batch]
+  # as.numeric() to avoid the same type-inconsistency bug that hit sum_stats().
+  d_hi[, iqr := as.numeric(quantile(n, 0.75) - quantile(n, 0.25)), by = batch]
+  d_hi[, q75 := as.numeric(quantile(n, 0.75)), by = batch]
   d_hi[, is_outlier := n > q75 + 1.5 * iqr]
   outliers <- d_hi[is_outlier == TRUE,
                    .(sample, batch, n_variants = n,
