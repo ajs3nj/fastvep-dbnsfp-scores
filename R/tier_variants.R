@@ -222,19 +222,51 @@ add_evidence <- function(v) {
   #
   # The cohort_af fallback matters when the fastvep annotation pipeline lacks
   # a per-variant gnomAD AF supplementary source (only gene-level constraint
-  # is loaded). In that case ALL variants would silently get af_used = NA,
-  # the rarity gate would treat everything as rare (via the is.na fallback),
-  # and Tier 1 would inflate massively while the modifier band never fires.
+  # is loaded). Without it, all variants get af_used = NA, the rarity gate
+  # treats everything as rare via the is.na fallback, Tier 1 inflates
+  # massively, and the modifier band never fires.
   #
-  # cohort_af is not a perfect substitute -- it misses variants that are
-  # common globally but rare in cohort -- but it's a much better honest
-  # proxy than treating everything as rare. Provenance is captured in the
-  # `af_source` column so downstream can see which fallback was used per
-  # variant.
+  # IMPORTANT: v1/v2 Stage 3.5 has a known cohort_af underdenominator bug
+  # when the input is per-sample VCFs (no 0/0 sites recorded). Stage 3.5's
+  # `cohort_an` counts only samples that emitted the variant in their VCF,
+  # not the total called cohort. Singleton variants get af = 0.5 (1/2) when
+  # they should be ~0.0008 (1/1294 for 647 samples).
+  #
+  # Detect + repair here: use max(cohort_an) as the true cohort denominator
+  # (max is correct because at least some variants are present in every
+  # sample, and for those Stage 3.5 gets it right). Recompute cohort_af as
+  # cohort_ac / max_an so singletons look like singletons.
+  cohaf_repaired <- rep(NA_real_, nrow(v))
+  if ("cohort_ac" %in% names(v) && "cohort_an" %in% names(v)) {
+    ac_col <- num_col(v, "cohort_ac")
+    an_col <- num_col(v, "cohort_an")
+    max_an <- suppressWarnings(max(an_col, na.rm = TRUE))
+    if (is.finite(max_an) && max_an > 0) {
+      # If the stored cohort_af looks broken (mostly > 5% because an is
+      # undercounted), quietly recompute using the max_an denominator.
+      stored_af <- if ("cohort_af" %in% names(v)) num_col(v, "cohort_af") else rep(NA_real_, nrow(v))
+      pct_high_stored <- mean(!is.na(stored_af) & stored_af > 0.05)
+      if (pct_high_stored > 0.5) {
+        # Recompute
+        cohaf_repaired <- ifelse(is.finite(ac_col), ac_col / max_an, NA_real_)
+        message(sprintf(
+          "[tier] cohort_af underdenominator bug detected (%.1f%% of stored cohort_af > 5%%); recomputed using max(cohort_an)=%d",
+          100 * pct_high_stored, as.integer(max_an)))
+      } else {
+        cohaf_repaired <- stored_af
+      }
+      # Overwrite the column so downstream (validate, figures) sees the
+      # corrected values too.
+      v[, cohort_af := cohaf_repaired]
+    }
+  } else if ("cohort_af" %in% names(v)) {
+    cohaf_repaired <- num_col(v, "cohort_af")
+  }
+
   faf   <- num_col(v, C$gnomad_faf)
   pmax  <- num_col(v, C$gnomad_popmax_af)
   af    <- num_col(v, C$gnomad_af)
-  cohaf <- if ("cohort_af" %in% names(v)) num_col(v, "cohort_af") else rep(NA_real_, nrow(v))
+  cohaf <- cohaf_repaired
 
   af_used <- ifelse(!is.na(faf),  faf,
              ifelse(!is.na(pmax), pmax,
