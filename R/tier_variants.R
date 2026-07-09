@@ -279,7 +279,40 @@ add_evidence <- function(v) {
                                      "none"))))
   v[, af_used   := af_used]
   v[, af_source := af_source]
-  v[, rare := is.na(af_used) | af_used <= CFG$af_max]
+
+  # Rarity threshold: adaptive when cohort_af is the only source.
+  #
+  # CFG$af_max = 1e-4 is calibrated for gnomAD scale (world-population AF).
+  # For a cohort of N samples, the resolution limit is 1/(2N). Singletons
+  # exceed 1e-4 for any N < 5000. Using 1e-4 as the rarity gate when the
+  # only AF source is cohort_af misclassifies every singleton as "not rare"
+  # and demotes true Tier 1 candidates (e.g. NF1 pLoFs seen in 1 sample) to
+  # Tier 5.
+  #
+  # Fix: when af_source starts with "cohort_af", relax the threshold to
+  # 3/(2N) so singletons, doubletons, and tripletons in the cohort are
+  # treated as rare. Runs with real gnomAD keep the strict 1e-4 threshold
+  # via af_used cascade priority (this branch only fires when cohort_af
+  # was actually the fallback).
+  #
+  # max_an was captured in the cohaf_repaired block above (2*N for
+  # autosomes when at least some variants are present in every sample --
+  # Stage 3.5's cohort_an is correct for those). If cohort_ac/an aren't
+  # available at all, fall back to the fixed threshold.
+  af_max_cohort <- if (exists("max_an") && is.finite(max_an) && max_an > 0)
+                     3 / max_an else CFG$af_max
+  af_max_effective <- ifelse(grepl("^cohort_af", af_source),
+                             pmax(CFG$af_max, af_max_cohort),
+                             CFG$af_max)
+  v[, af_max_effective := af_max_effective]
+  v[, rare := is.na(af_used) | af_used <= af_max_effective]
+  if (any(grepl("^cohort_af", af_source))) {
+    message(sprintf(
+      "[tier] adaptive rarity: cohort_af source uses af_max=%.2e (3/max_an=3/%d); other sources use af_max=%.2e",
+      af_max_cohort,
+      as.integer(if (exists("max_an") && is.finite(max_an)) max_an else 0),
+      CFG$af_max))
+  }
 
   v[, is_lof := variant_class == "pLoF"]
   v[, constrained := T0(num_col(v, C$loeuf) <  CFG$loeuf_constrained) |

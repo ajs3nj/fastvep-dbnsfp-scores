@@ -96,6 +96,21 @@ fi
 # ============================== tier distribution ============================
 section "3. Tier distribution"
 
+# The pyramid check assumes gnomAD popmax is loaded. Without it, no variant
+# can be marked "common in gnomAD" so Tier 1 inflates -- not a tiering-logic
+# bug, a data-availability issue. Detect the missing-gnomAD case (>99% of
+# variants have empty popmax) and downgrade the pyramid check to INFO with
+# a clear message so the caveat travels with the report.
+gnomad_empty_pct=$(awk -F'\t' '
+  NR == 1 { for (i=1;i<=NF;i++) c[$i] = i; next }
+  {
+    total++
+    pmax = $c["gnomad_popmax_af"]
+    if (pmax == "" || pmax == ".") empty++
+  }
+  END { printf "%.1f", (total > 0 ? 100 * empty / total : 0) }
+' "$VARIANTS")
+
 awk -F'\t' '
   NR == 1 { for (i=1;i<=NF;i++) c[$i] = i; next }
   $c["tier"] >= 1 && $c["tier"] <= 5 { t[$c["tier"]]++ }
@@ -110,9 +125,14 @@ awk -F'\t' '
     else print "FAIL_T4_NONZERO"
   }
 ' "$VARIANTS" | tee /tmp/_tier_dist.txt > /dev/null
-grep -q PASS_PYRAMID /tmp/_tier_dist.txt \
-  && pass "tier distribution is pyramid-shaped (T1 < T2 and < 1% of total)" \
-  || fail "tier distribution is inverted -- Tier 1 should be much smaller than Tier 2"
+
+if grep -q PASS_PYRAMID /tmp/_tier_dist.txt; then
+  pass "tier distribution is pyramid-shaped (T1 < T2 and < 1% of total)"
+elif (( $(echo "$gnomad_empty_pct > 99" | bc -l) )); then
+  info "tier distribution inverted BUT gnomAD popmax is ${gnomad_empty_pct}% empty -- Tier 1 inflation is a documented consequence of the missing SA source, not a tiering bug (load a per-variant gnomAD source to fix)"
+else
+  fail "tier distribution is inverted -- Tier 1 should be much smaller than Tier 2"
+fi
 grep -q PASS_T4_NONZERO /tmp/_tier_dist.txt \
   && pass "Tier 4 is non-empty" \
   || fail "Tier 4 is empty -- suspect class-conditional rules over-promoting"
@@ -261,16 +281,24 @@ fi
 # ============================== modifier flag ================================
 section "6. Modifier candidate flag"
 
-# Every modifier_candidate=TRUE should have AF in band (1e-4 < popmax <= 0.05)
-# OR rare and in Tier 3/4 (sub-Mendelian)
+# Every modifier_candidate=TRUE should have AF in band (1e-4 < af_used <= 0.05)
+# OR rare and in Tier 3/4 (sub-Mendelian rescue).
+#
+# Use af_used (R's effective rarity column, cascade: faf -> popmax -> gnomad_af
+# -> cohort_af). Falling back to popmax makes this check silently pass all
+# modifier candidates when gnomAD isn't loaded (pmax empty everywhere), because
+# the "rare + tier 3/4" branch would swallow everything -- masking real rule
+# violations. Section 4c uses the same af_used-with-popmax-fallback pattern.
 viol=$(awk -F'\t' '
   NR == 1 { for (i=1;i<=NF;i++) c[$i] = i; next }
   $c["modifier_candidate"] == "TRUE" {
-    pmax = $c["gnomad_popmax_af"]; tier = $c["tier"]+0
-    in_band = (pmax != "" && pmax != "." && pmax+0 > 1e-4 && pmax+0 <= 0.05)
-    rare_low_tier = ((pmax == "" || pmax == "." || pmax+0 <= 1e-4) && (tier == 3 || tier == 4))
+    if (("af_used" in c) && $c["af_used"] != "" && $c["af_used"] != ".") af_used = $c["af_used"]
+    else af_used = $c["gnomad_popmax_af"]
+    tier = $c["tier"]+0
+    in_band = (af_used != "" && af_used != "." && af_used+0 > 1e-4 && af_used+0 <= 0.05)
+    rare_low_tier = ((af_used == "" || af_used == "." || af_used+0 <= 1e-4) && (tier == 3 || tier == 4))
     if (!in_band && !rare_low_tier) {
-      print $c["chrom"]":"$c["pos"]" tier="tier" pmax="pmax
+      print $c["chrom"]":"$c["pos"]" tier="tier" af_used="af_used" af_source="$c["af_source"]
     }
   }
 ' "$VARIANTS" | head -5)
