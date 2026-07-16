@@ -59,10 +59,11 @@ if [[ -z "$REPO" ]]; then
   REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fi
 
-# Default results doc under repo
+# Default results doc under repo (the collaborator-facing summary).
+# The more-detailed operator run notes are copied separately if present.
 if [[ -z "$RESULTS_DOC" ]]; then
-  # First match under docs/ ending in _run.md; fall back to results_guide.md
-  RESULTS_DOC="$(ls "$REPO"/docs/*_run.md 2>/dev/null | head -1)"
+  RESULTS_DOC="$(ls "$REPO"/docs/*_summary.md 2>/dev/null | head -1)"
+  [[ -z "$RESULTS_DOC" ]] && RESULTS_DOC="$(ls "$REPO"/docs/*_run.md 2>/dev/null | head -1)"
   [[ -z "$RESULTS_DOC" ]] && RESULTS_DOC="$REPO/docs/results_guide.md"
 fi
 
@@ -187,12 +188,21 @@ if [[ -s "$PKG_DIR/tables/cohort.variants.tsv" ]]; then
 fi
 
 # ------------------------------ results doc + README -------------------------
-log "copying results doc + writing README..."
+log "copying results docs + writing README..."
+# Primary doc (whatever --results-doc points at, or auto-detected summary)
 if [[ -f "$RESULTS_DOC" ]]; then
   cp "$RESULTS_DOC" "$PKG_DIR/$(basename "$RESULTS_DOC")"
 fi
+# Additional docs -- copy the run notes if present and distinct from the
+# primary doc, so both the reviewer-facing summary and the operator-facing
+# run notes travel together.
+RUN_DOC="$(ls "$REPO"/docs/*_run.md 2>/dev/null | head -1)"
+if [[ -n "$RUN_DOC" && -f "$RUN_DOC" && "$RUN_DOC" != "$RESULTS_DOC" ]]; then
+  cp "$RUN_DOC" "$PKG_DIR/$(basename "$RUN_DOC")"
+fi
 
 DOC_BASENAME="$(basename "$RESULTS_DOC")"
+RUN_BASENAME="$([[ -n "$RUN_DOC" ]] && basename "$RUN_DOC")"
 DATE="$(date '+%Y-%m-%d')"
 
 cat > "$PKG_DIR/README.md" <<EOF
@@ -202,9 +212,13 @@ Packaged $DATE.
 
 ## Where to start
 
-1. \`${DOC_BASENAME}\` — the full results notes. Explains the cohort, the
-   tier system, both data-quality fixes applied during this run, known
-   limitations, and recommended follow-up. **Read this first.**
+1. \`${DOC_BASENAME}\` — high-level methods and results summary with
+   embedded figures. Written to be readable end-to-end and not overstate
+   the findings. **Read this first.**
+$([[ -n "$RUN_BASENAME" && "$RUN_BASENAME" != "$DOC_BASENAME" ]] && echo "
+   For the technical operator notes — including detailed writeups of
+   the data-quality fixes applied during this run — see
+   \`${RUN_BASENAME}\`.")
 
 2. \`tables/cohort.variants.tsv\` — one row per unique tiered variant. This
    is the primary result. Every row has tier (1-5), modifier_candidate
