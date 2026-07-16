@@ -1,15 +1,13 @@
 # Cohort variant annotation and tiering pipeline
 
-## Methods documentation for collaborators
+## Methods documentation
 
 This document describes the methods used to annotate, filter, and prioritize
 genomic variants in cohort-scale rare-disease studies, with an immediate focus
-on neurofibromatosis (NF) cohort modifier discovery. It is intended for
-clinical and research collaborators who need to understand and interpret the
-pipeline outputs, whether or not they run the pipeline themselves.
+on neurofibromatosis (NF) cohort modifier discovery.
 
 The pipeline is open-source and lives at
-`github.com/<owner>/fastvep-dbnsfp-scores`. The reproducible artifact for any
+`github.com/ajs3nj/fastvep-dbnsfp-scores`. The reproducible artifact for any
 given run is the commit hash of that repo plus the manifest of input VCFs,
 reference data versions, and command-line flags used.
 
