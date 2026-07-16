@@ -138,8 +138,6 @@ package) and, ultimately, functional validation.
 
 ### 2.4 Batch effect quality control
 
-![batch effect](figures/qc_batch_burden_high_priority.png)
-
 Median per-sample Tier 1+2 burden by batch is 192–200 across all seven
 batches. Kruskal-Wallis across batches returns p = 0.14 (Tier 1+2) and
 p = 0.42 (Tier 1); all pairwise Wilcoxon Bonferroni-corrected p-values
@@ -155,8 +153,6 @@ Tier 1+2 burden (n_variants > q75 + 1.5 IQR). List provided in
 per-sample analysis, though not disqualifying on its own.
 
 ### 2.5 Allele-frequency source composition
-
-![AF source distribution](figures/af_source_distribution.png)
 
 The fastVEP supplementary-annotation dir for this run lacked a
 per-variant gnomAD frequency source. 93% of variants (440,052 / 473,323)
