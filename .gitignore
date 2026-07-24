@@ -15,3 +15,5 @@ __pycache__/
 *.osa2
 sa_databases/
 data/
+.DS_Store
+**/.DS_Store
