@@ -52,10 +52,21 @@ ESM1b, REVEL — plus LOEUF, pLI, and ClinVar significance.
 Per-sample outputs are merged into a cohort-wide long-format table, then
 pre-filtered and joined with per-variant cohort AC / AN before tiering.
 
-For this run specifically, the fastVEP supplementary-annotation directory
-lacked a per-variant gnomAD frequency source (only per-gene constraint
-was loaded). Cohort allele frequency (`cohort_af`) was used as the
-rarity fallback throughout — see §4 for the resulting caveat.
+For this run specifically, two supplementary-annotation sources that the
+tier logic is designed to consume were NOT loaded in the fastVEP SA dir:
+
+- **Per-variant gnomAD frequency** (only per-gene constraint was loaded).
+  Cohort allele frequency (`cohort_af`) was used as the rarity fallback
+  throughout — see §4 for the resulting caveat.
+- **SpliceAI** (delta-score predictions for non-canonical splice
+  variants). All 473,323 variants have an empty `spliceai_ds_max`
+  column, so the SpliceAI-based Tier 1/2/3 rules for non-canonical
+  splice variants and the SpliceAI-based modifier signal did not fire.
+  Non-canonical splice variants that would otherwise be Tier 1 (via
+  SpliceAI ≥ 0.8) are demoted to Tier 4 (rare, no signal available)
+  unless they also carry ClinVar Pathogenic annotation. Impact on this
+  run's Tier 1 count is modest since most Tier 1 signal in an NF1
+  cohort is pLoF and ClinVar-supported. See §4.
 
 ### 1.3 Tiering
 
@@ -217,6 +228,18 @@ gnomAD data would have filtered out. Loading a per-variant gnomAD
 source and re-running the tier step is the recommended next step
 before treating any specific Tier 1 variant as a real candidate for
 follow-up.
+
+**SpliceAI was not loaded in the fastVEP SA dir for this run.** The tier
+rules for non-canonical splice variants (Tier 1 at SpliceAI ≥ 0.8, Tier 2
+at 0.5–0.8, Tier 3 at 0.2–0.5) cannot fire, so splice_noncanonical
+variants without ClinVar Pathogenic annotation land at Tier 4/5 rather
+than mid-tier. The SpliceAI-supported branch of the modifier signal is
+also absent. Impact on the primary NF1 track is modest because most
+NF1 Tier 1 signal is pLoF and ClinVar-supported (canonical splice donor
+/ acceptor variants are handled by the pLoF rule and don't depend on
+SpliceAI), but non-canonical splice variants elsewhere in the genome
+are under-tiered. Loading SpliceAI and re-running is a recommended
+step alongside loading gnomAD.
 
 **Modifier candidates are not confirmed modifiers.** The 365 candidates
 listed satisfy the modifier band + panel + signal criteria. They have

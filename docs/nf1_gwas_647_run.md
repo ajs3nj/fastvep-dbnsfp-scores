@@ -171,12 +171,46 @@ duplication region). Not classified as Tier 1 by our rules (fails the
 common-variant filter). Flagged for manual review before any downstream
 carrier-level interpretation.
 
-### 4.3 Non-coding coverage
+### 4.3 Missing SpliceAI supplementary source
 
-Cohort has 169,283 rare non-coding variants, of which 0 land in Tier 4 —
-consistent with the documented non-coding limitation (splice-region signals
-outside SpliceAI's window aren't picked up). See `docs/noncoding_v2_plan.md`
-for the v2 improvement plan.
+Separately from missing gnomAD (§4.1), the fastVEP SA dir for this run
+also lacked SpliceAI delta-score predictions. All 473,323 variants have
+an empty `spliceai_ds_max` column. Consequences:
+
+- Non-canonical splice variants that would be Tier 1 via `SpliceAI ≥ 0.8`,
+  Tier 2 via `0.5 ≤ SpliceAI < 0.8`, and Tier 3 via `0.2 ≤ SpliceAI < 0.5`
+  cannot be promoted through those rules in this run. Non-canonical splice
+  variants without ClinVar Pathogenic annotation therefore land in Tier 4
+  or Tier 5 rather than the appropriate mid tier.
+- The SpliceAI-supported branch of the modifier candidate signal (a rare
+  variant in a modifier gene with SpliceAI ≥ 0.2) does not fire.
+- Tier 1 splice signal in this run comes exclusively from canonical splice
+  variants (splice_donor / splice_acceptor at ±1,2 positions, which are
+  classified pLoF regardless of SpliceAI) and from ClinVar-annotated
+  splice variants.
+
+Two `tier_reason` strings still reference SpliceAI as part of the rule
+description (e.g., `"in-frame in constrained gene or SpliceAI>=0.5"`)
+because the rule OR-condition contains SpliceAI; in this run those tiers
+are all firing from the non-SpliceAI arm of the OR. The label is
+accurate for the general rule but slightly misleading for this run
+specifically.
+
+**Fix path.** Add SpliceAI to the fastVEP SA dir and re-run tiering.
+Expected impact is modest for the primary NF1 pLoF track (mostly
+canonical splice + pLoF, which don't depend on SpliceAI), but the
+Tier 3-4 populations for splice_noncanonical would be repopulated,
+and the modifier count could grow by variants currently sitting in
+Tier 5 for lack of any signal.
+
+### 4.4 Non-coding coverage
+
+Cohort has 169,283 rare non-coding variants, of which 0 land in Tier 4.
+Two contributing factors: (a) the documented non-coding limitation —
+splice-region signals outside SpliceAI's window aren't picked up (see
+`docs/noncoding_v2_plan.md` for the v2 improvement plan), compounded in
+this run by (b) SpliceAI not being loaded at all (§4.3), so even the
+in-window splice-region signals aren't available.
 
 ---
 
@@ -241,7 +275,13 @@ Companion tables:
    Expected impact: Tier 1 drops from ~24k to a few thousand as gnomAD-common
    variants get properly demoted. Modifier count should stay stable or grow
    slightly.
-2. Manual review of 17:31324211 (the suspected splice donor artifact).
+2. Add SpliceAI to the SA dir. Restores the splice_noncanonical tier logic
+   (Tier 1/2/3 by SpliceAI ≥ 0.8 / 0.5 / 0.2 respectively) and the
+   SpliceAI-supported modifier signal. Expected impact on Tier 1 is
+   modest for the NF1 primary track (mostly pLoF + canonical splice
+   already), but should promote a meaningful number of currently-Tier-5
+   splice_noncanonical variants into Tier 3-4.
+3. Manual review of 17:31324211 (the suspected splice donor artifact).
 
 **Batch effect check — passed.** Kruskal-Wallis across the seven batch IDs
 returned p = 0.42 for Tier 1 and p = 0.14 for Tier 1+2; all pairwise
