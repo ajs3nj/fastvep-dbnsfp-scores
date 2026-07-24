@@ -5,16 +5,27 @@
 # pipelines. Detects batch effects that would bias downstream gene-burden
 # tests or modifier discovery.
 #
-# For the NF1 GWAS cohort specifically we mix three pipelines:
-#   - DRAGEN (batches 1-3)
-#   - DRAGEN with hard-filtered VCF (batch 4)
-#   - bwa-mem2 + GATK HaplotypeCaller (batches 5-7)
+# For the NF1 GWAS cohort specifically we mix three distinct pipelines:
+#   - DRAGEN                            (306 samples, chunked into batches 1-3)
+#   - DRAGEN with hard-filtered VCF     (52 samples, batch 4)
+#   - bwa-mem2 + GATK HaplotypeCaller   (289 samples, chunked into batches 5-7)
+#
+# NOTE: batches 1/2/3 within DRAGEN and 5/6/7 within bwa-mem2+GATK are
+# NOT distinct sequencing conditions -- they are arbitrary throughput
+# partitions of the same underlying data, made so the batched pipeline
+# could process ~100 samples per chunk with disk reclamation between
+# chunks. Only the three-pipeline split (DRAGEN / DRAGEN-hard-filtered /
+# bwa-mem2+GATK) is a real condition-level distinction.
 #
 # Different callers emit different variant counts per sample (sensitivity /
 # filtering choices differ). Before we interpret a per-gene burden test as
-# biological signal, we need to know whether batch dominates the per-sample
-# variant count. If batch explains a large fraction of the per-sample
-# variance, downstream tests must control for it.
+# biological signal, we need to know whether the pipeline choice dominates
+# the per-sample variant count. Running Kruskal-Wallis across all seven
+# batch IDs tests two things simultaneously: (i) that within-pipeline
+# chunks don't differ from each other -- a sanity check on the arbitrary
+# partitioning -- and (ii) that the three real pipeline conditions don't
+# differ. If p < 0.01 across-batches, downstream tests must control for
+# pipeline (batch as covariate).
 #
 # Inputs:
 #   --variants   cohort.variants.tsv  (has tier, chrom, pos, ref, alt)

@@ -17,18 +17,30 @@ including detailed writeups, see `nf1_gwas_647_run.md`.
 ### 1.1 Cohort composition
 
 647 individuals with confirmed NF1, contributed by the collaborator via a
-Synapse-hosted manifest. VCFs were called with three different pipelines
-depending on original sequencing batch:
+Synapse-hosted manifest. VCFs were called with three distinct upstream
+pipelines depending on the original sequencing project:
 
-| Pipeline                        | Batches | n_samples |
-|---------------------------------|---------|----------:|
-| DRAGEN                          | 1, 2, 3 |       306 |
-| DRAGEN (hard-filtered)          | 4       |        52 |
-| bwa-mem2 + GATK HaplotypeCaller | 5, 6, 7 |       289 |
+| Pipeline                        | n_samples |
+|---------------------------------|----------:|
+| DRAGEN                          |       306 |
+| DRAGEN (hard-filtered)          |        52 |
+| bwa-mem2 + GATK HaplotypeCaller |       289 |
+
+For orchestration, each of the two large pipelines was arbitrarily
+chunked into three within-pipeline batches of ~100 samples each so the
+batched pipeline (§1.2) could process them incrementally with disk
+reclamation between chunks. This produces seven batch IDs (three DRAGEN
+chunks, one DRAGEN hard-filtered, three bwa-mem2 + GATK chunks). The
+within-pipeline chunks are not distinct sequencing conditions — they
+are throughput partitions of the same underlying data.
 
 Mixed-pipeline cohorts can carry batch effects (different callers emit
-different variant counts per sample), so the analysis includes an explicit
-batch-effect QC step (§2.4).
+different variant counts per sample), so the analysis includes an
+explicit batch-effect QC step (§2.4). The QC uses the seven batch IDs
+as-is, which tests two things simultaneously: whether within-pipeline
+chunking introduced spurious differences (should not, by design) and
+whether the three real pipeline conditions differ (the substantive
+question).
 
 ### 1.2 Annotation pipeline
 

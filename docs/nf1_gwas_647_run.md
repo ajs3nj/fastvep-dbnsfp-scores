@@ -14,17 +14,34 @@ Two data-quality issues surfaced during interpretation, both patched in
 
 ## 1. Cohort description
 
-647 samples from three sequencing pipelines, mixed at the batch level:
+647 samples from three distinct upstream sequencing / calling pipelines:
 
-| Batch | Pipeline                        | n_samples |
-|-------|---------------------------------|----------:|
-| 1     | DRAGEN                          |       102 |
-| 2     | DRAGEN                          |       102 |
-| 3     | DRAGEN                          |       102 |
-| 4     | DRAGEN (hard-filtered)          |        52 |
-| 5     | bwa-mem2 + GATK HaplotypeCaller |        97 |
-| 6     | bwa-mem2 + GATK HaplotypeCaller |        96 |
-| 7     | bwa-mem2 + GATK HaplotypeCaller |        96 |
+| Pipeline                        | n_samples |
+|---------------------------------|----------:|
+| DRAGEN                          |       306 |
+| DRAGEN (hard-filtered)          |        52 |
+| bwa-mem2 + GATK HaplotypeCaller |       289 |
+
+For orchestration, the two large pipelines were arbitrarily chunked into
+within-pipeline batches of ~100 samples each so `cohort_pipeline_batched.sh`
+could process them incrementally with disk reclamation between chunks. This
+produces seven `batch_id`s in the manifest:
+
+| batch_id | Pipeline                        | n_samples | Nature                       |
+|---------:|---------------------------------|----------:|------------------------------|
+| 1        | DRAGEN                          |       102 | throughput chunk of DRAGEN   |
+| 2        | DRAGEN                          |       102 | throughput chunk of DRAGEN   |
+| 3        | DRAGEN                          |       102 | throughput chunk of DRAGEN   |
+| 4        | DRAGEN (hard-filtered)          |        52 | distinct condition           |
+| 5        | bwa-mem2 + GATK HaplotypeCaller |        97 | throughput chunk of bwa+GATK |
+| 6        | bwa-mem2 + GATK HaplotypeCaller |        96 | throughput chunk of bwa+GATK |
+| 7        | bwa-mem2 + GATK HaplotypeCaller |        96 | throughput chunk of bwa+GATK |
+
+**Within-pipeline batches (1/2/3 and 5/6/7) are not distinct sequencing
+conditions** — they are arbitrary partitions of the same underlying data
+made only to bound per-batch memory / disk usage. Only batches 4 (DRAGEN
+hard-filtered), and the DRAGEN vs bwa-mem2+GATK split are real
+condition-level distinctions.
 
 VCFs were pulled from Synapse via `run_batch.sh` (SYNAPSE_AUTH_TOKEN),
 normalized with `stage0_normalize_vcf.sh` (bcftools norm -m- with UCSC → Ensembl
@@ -226,16 +243,22 @@ Companion tables:
    slightly.
 2. Manual review of 17:31324211 (the suspected splice donor artifact).
 
-**Batch effect check — passed.** Kruskal-Wallis across the seven batches
-(three pipelines) returned p = 0.42 for Tier 1 and p = 0.14 for Tier 1+2;
-all pairwise Wilcoxon p-adjusted are 1.0. Per-batch median burden is 150–156
-(Tier 1) and 192–200 (Tier 1+2). Despite mixing DRAGEN, DRAGEN
-hard-filtered, and bwa-mem2 + GATK, per-sample burden distributions are
-statistically indistinguishable. **Pooled downstream burden analysis is
-defensible; pipeline / batch does NOT need to enter the covariate list.**
-48 samples were flagged as within-batch outliers (n_variants > q75 + 1.5 IQR
-for Tier 1+2) — see `figures/qc_batch_outliers.tsv` if you want to sanity
-check the highest-burden individuals before running the gene-burden test.
+**Batch effect check — passed.** Kruskal-Wallis across the seven batch IDs
+returned p = 0.42 for Tier 1 and p = 0.14 for Tier 1+2; all pairwise
+Wilcoxon p-adjusted are 1.0. Per-batch median burden is 150–156 (Tier 1)
+and 192–200 (Tier 1+2). Because the seven batches include both arbitrary
+within-pipeline throughput chunks (1/2/3 within DRAGEN, 5/6/7 within
+bwa-mem2+GATK) and the three real pipeline conditions (DRAGEN vs
+DRAGEN-hard-filtered vs bwa-mem2+GATK), this test simultaneously checks
+two things: (i) that within-pipeline chunking didn't introduce spurious
+noise — which it shouldn't by design, and (ii) that per-sample burden
+differs across the real pipeline conditions. Both come back
+indistinguishable. **Pooled downstream burden analysis is defensible;
+pipeline / batch does NOT need to enter the covariate list.** 48
+samples were flagged as within-batch outliers (n_variants > q75 +
+1.5 IQR for Tier 1+2) — see `figures/qc_batch_outliers.tsv` if you
+want to sanity check the highest-burden individuals before running the
+gene-burden test.
 
 **Optional, but nice to have:**
 
